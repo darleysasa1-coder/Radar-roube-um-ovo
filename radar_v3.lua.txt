@@ -1,0 +1,1217 @@
+--[[
+    Tenshi Finder Beta v0.5 (layout fiel ao print)
+
+    CONFIGURE (secao CONFIG):
+      * RELOAD_URL ou RELOAD_FILE -> necessario para o ALL SERVERS continuar
+        sozinho apos cada teleporte (usa queue_on_teleport).
+        Sem isso, coloque o script na pasta "autoexec" do executor.
+      * Ajuste os nomes de atributos (VALUE_NAMES, WEIGHT_NAMES...) ao jogo.
+
+    EXECUTOR: precisa de request/http_request e queue_on_teleport.
+    (writefile/readfile sao opcionais; sem eles o estado viaja via TeleportData.)
+]]
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+----------------------------------------------------------------------
+-- CONFIG
+----------------------------------------------------------------------
+local CONFIG = {
+    TITLE            = "Tenshi Finder Beta v0.5",
+    SUBTITLE         = "https://discord.gg/Z65aABK2TT",
+
+    RANK_BY          = "Weight",   -- criterio de "maior item": "Weight" ou "Value"
+    MAX_SERVERS      = 100,        -- servidores por sessao do ALL SERVERS
+    MIN_FREE_SLOTS   = 2,          -- vagas minimas para tentar entrar
+    SETTLE_DELAY     = 3,          -- segundos para o servidor popular o Workspace
+    HOP_DELAY        = 3,          -- pausa entre tentativas de teleporte
+    TELEPORT_TIMEOUT = 20,         -- segundos esperando o teleporte antes de pular
+    MAX_SAVED        = 30,         -- itens guardados no ranking global
+    PER_SERVER_TOP   = 5,          -- quantos itens por servidor entram no ranking
+    MAX_CARDS        = 30,         -- cards criados (pool reutilizado)
+
+    FRAME_BUDGET     = 0.004,      -- segundos de CPU por frame no scan manual
+    HOP_FRAME_BUDGET = 0.010,      -- idem durante o ALL SERVERS
+
+    RELOAD_URL       = "",         -- ex: "https://raw.githubusercontent.com/user/repo/main/radar.lua"
+    RELOAD_FILE      = "TenshiRadar.lua",
+    STATE_FILE       = "TenshiRadarState.json",
+
+    VALUE_SUFFIX     = "/s",
+
+    -- Ajuste conforme o jogo
+    NAME_PATTERNS    = { "egg", "ovo", "divine", "eternal", "cósmico", "cosmico" },
+    VALUE_NAMES      = { "Value", "Price", "BaseValue", "Valor", "Income" },
+    WEIGHT_NAMES     = { "Weight", "Peso" },
+    RARITY_NAMES     = { "Tier", "Rarity", "Raridade" },
+    MUTATION_NAMES   = { "Mutation", "Mutacao", "Mutação" },
+    ICON_NAMES       = { "Icon", "Image", "Thumbnail" },
+
+    -- Ordem crescente. O 1o nome de cada nivel aparece no botao MIN RARITY.
+    RARITY_LEVELS    = {
+        { "Any" },
+        { "Comum", "Common" },
+        { "Raro", "Rare" },
+        { "Épico", "Epic" },
+        { "Lendário", "Legendary" },
+        { "Mítico", "Mythic" },
+        { "Cósmico", "Cosmic" },
+        { "Divino", "Divine" },
+        { "Eterno", "Eternal" },
+    },
+
+    ON_PREMIUM       = nil,        -- function() ... end (opcional)
+}
+
+----------------------------------------------------------------------
+-- SERVICOS / GLOBAIS
+----------------------------------------------------------------------
+local Players          = game:GetService("Players")
+local Workspace        = game:GetService("Workspace")
+local HttpService      = game:GetService("HttpService")
+local TeleportService  = game:GetService("TeleportService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer      = Players.LocalPlayer
+
+local env = (getgenv and getgenv()) or _G
+local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request or (fluxus and fluxus.request)
+
+if env.TenshiRadarCleanup then
+    pcall(env.TenshiRadarCleanup)
+end
+pcall(function()
+    local old = LocalPlayer.PlayerGui:FindFirstChild("TenshiProMaxFinder")
+    if old then old:Destroy() end
+end)
+
+local alive = true
+local connections = {}
+local ScreenGui
+
+local function track(conn)
+    connections[#connections + 1] = conn
+    return conn
+end
+
+local function log(...)
+    print("[RADAR]", ...)
+end
+
+env.TenshiRadarCleanup = function()
+    alive = false
+    for _, c in ipairs(connections) do
+        pcall(function() c:Disconnect() end)
+    end
+    pcall(function()
+        if ScreenGui then ScreenGui:Destroy() end
+    end)
+end
+
+----------------------------------------------------------------------
+-- RARIDADES
+----------------------------------------------------------------------
+local ACCENTS = {
+    ["Á"] = "á", ["É"] = "é", ["Í"] = "í", ["Ó"] = "ó", ["Ú"] = "ú",
+    ["Ã"] = "ã", ["Õ"] = "õ", ["Ç"] = "ç", ["Ê"] = "ê", ["Â"] = "â", ["Ô"] = "ô",
+}
+
+local function norm(s)
+    s = tostring(s):lower()
+    for up, low in pairs(ACCENTS) do
+        s = s:gsub(up, low)
+    end
+    return s
+end
+
+local LEVEL_KEYS = {}
+for i, names in ipairs(CONFIG.RARITY_LEVELS) do
+    LEVEL_KEYS[i] = {}
+    if i > 1 then
+        for _, n in ipairs(names) do
+            LEVEL_KEYS[i][#LEVEL_KEYS[i] + 1] = norm(n)
+        end
+    end
+end
+
+local function rarityRank(text)
+    if not text then return 0 end
+    local n = norm(text)
+    local best = 0
+    for i = 2, #LEVEL_KEYS do
+        for _, key in ipairs(LEVEL_KEYS[i]) do
+            if n:find(key, 1, true) then best = i end
+        end
+    end
+    return best
+end
+
+----------------------------------------------------------------------
+-- ESTADO PERSISTENTE (arquivo + TeleportData)
+----------------------------------------------------------------------
+local function newState()
+    return {
+        __tenshi = true,
+        active = false,
+        updated = 0,
+        view = "my",         -- "my" | "all"
+        minRarity = 1,       -- indice em RARITY_LEVELS (1 = Any)
+        scanned = 0,
+        hops = 0,
+        visited = {},
+        queue = {},
+        items = {},          -- ranking global do ALL SERVERS
+    }
+end
+
+local function decodeState(str)
+    local ok, t = pcall(HttpService.JSONDecode, HttpService, str)
+    if ok and type(t) == "table" and t.__tenshi then
+        t.visited = type(t.visited) == "table" and t.visited or {}
+        t.queue = type(t.queue) == "table" and t.queue or {}
+        t.items = type(t.items) == "table" and t.items or {}
+        t.view = (t.view == "all") and "all" or "my"
+        t.minRarity = tonumber(t.minRarity) or 1
+        if t.minRarity < 1 or t.minRarity > #CONFIG.RARITY_LEVELS then t.minRarity = 1 end
+        t.scanned = t.scanned or 0
+        t.hops = t.hops or 0
+        t.updated = t.updated or 0
+        return t
+    end
+    return nil
+end
+
+local function loadState()
+    local candidates = {}
+
+    local okT, td = pcall(function() return TeleportService:GetLocalPlayerTeleportData() end)
+    if okT and type(td) == "table" and td.__tenshi then
+        local okE, json = pcall(HttpService.JSONEncode, HttpService, td)
+        local s = okE and decodeState(json)
+        if s then candidates[#candidates + 1] = s end
+    end
+
+    if readfile and isfile then
+        local okF, content = pcall(function()
+            if isfile(CONFIG.STATE_FILE) then return readfile(CONFIG.STATE_FILE) end
+        end)
+        if okF and content then
+            local s = decodeState(content)
+            if s then candidates[#candidates + 1] = s end
+        end
+    end
+
+    local picked
+    for _, s in ipairs(candidates) do
+        if not picked or s.updated > picked.updated then picked = s end
+    end
+    return picked or newState()
+end
+
+local state = loadState()
+local resuming = state.active and (os.time() - state.updated) < 180
+if state.active and not resuming then
+    state.active = false -- estado velho: nao retomar sozinho
+end
+
+local function saveState()
+    state.updated = os.time()
+    if writefile then
+        pcall(writefile, CONFIG.STATE_FILE, HttpService:JSONEncode(state))
+    end
+end
+
+local function markVisited(jobId)
+    if jobId and jobId ~= "" then state.visited[jobId] = true end
+end
+
+----------------------------------------------------------------------
+-- HELPERS DE UI
+----------------------------------------------------------------------
+local C = {
+    bg      = Color3.fromRGB(40, 40, 44),
+    border  = Color3.fromRGB(18, 18, 20),
+    card    = Color3.fromRGB(68, 68, 72),
+    iconBg  = Color3.fromRGB(44, 44, 48),
+    text    = Color3.fromRGB(255, 255, 255),
+    muted   = Color3.fromRGB(170, 170, 175),
+    green   = Color3.fromRGB(62, 168, 44),
+    greenD  = Color3.fromRGB(20, 62, 14),
+    dark    = Color3.fromRGB(26, 26, 28),
+    here    = Color3.fromRGB(84, 84, 88),
+    blue    = Color3.fromRGB(28, 72, 176),
+    gold    = Color3.fromRGB(196, 148, 24),
+    red     = Color3.fromRGB(176, 28, 36),
+    money   = Color3.fromRGB(76, 208, 76),
+    ago     = Color3.fromRGB(255, 214, 102),
+    discord = Color3.fromRGB(205, 45, 225),
+    closeX  = Color3.fromRGB(232, 40, 40),
+    gear    = Color3.fromRGB(120, 170, 255),
+}
+
+local RARITY_COLORS = {
+    [2] = Color3.fromRGB(200, 200, 205),
+    [3] = Color3.fromRGB(70, 140, 255),
+    [4] = Color3.fromRGB(176, 96, 255),
+    [5] = Color3.fromRGB(255, 150, 60),
+    [6] = Color3.fromRGB(240, 80, 160),
+    [7] = Color3.fromRGB(92, 70, 255),
+    [8] = Color3.fromRGB(255, 190, 40),
+    [9] = Color3.fromRGB(190, 90, 255),
+}
+
+local FONT = Enum.Font.FredokaOne
+local BLACK = Color3.new(0, 0, 0)
+
+local function new(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do o[k] = v end
+    if parent then o.Parent = parent end -- Parent por ultimo (menos reflow)
+    return o
+end
+
+local function corner(parent, r)
+    return new("UICorner", { CornerRadius = UDim.new(0, r) }, parent)
+end
+
+-- ApplyStrokeMode = Border: sem isso, em TextButton o UIStroke contorna o TEXTO
+local function stroke(parent, color, thickness)
+    return new("UIStroke", {
+        Color = color,
+        Thickness = thickness or 1.5,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, parent)
+end
+
+local function label(parent, props)
+    local p = {
+        BackgroundTransparency = 1,
+        Font = FONT,
+        TextColor3 = C.text,
+        TextSize = 12,
+        TextStrokeTransparency = 0.45,
+        TextStrokeColor3 = BLACK,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Text = "",
+    }
+    for k, v in pairs(props) do p[k] = v end
+    return new("TextLabel", p, parent)
+end
+
+local function button(parent, props, strokeColor)
+    local p = {
+        AutoButtonColor = true,
+        BorderSizePixel = 0,
+        Font = FONT,
+        TextColor3 = C.text,
+        TextSize = 14,
+        TextStrokeTransparency = 0.45,
+        TextStrokeColor3 = BLACK,
+        Text = "",
+    }
+    for k, v in pairs(props) do p[k] = v end
+    local b = new("TextButton", p, parent)
+    corner(b, 4)
+    if strokeColor then stroke(b, strokeColor, 1.5) end
+    return b
+end
+
+local setProp = function(obj, prop, value)
+    if obj[prop] ~= value then obj[prop] = value end
+end
+
+----------------------------------------------------------------------
+-- CONSTRUCAO DA UI (design em 300 x 506, escalado por UIScale)
+----------------------------------------------------------------------
+local okGui
+okGui, ScreenGui = pcall(function()
+    return new("ScreenGui", {
+        Name = "TenshiProMaxFinder",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    }, LocalPlayer:WaitForChild("PlayerGui"))
+end)
+if not okGui or not ScreenGui then return end
+
+local MainFrame = new("Frame", {
+    Size = UDim2.new(0, 300, 0, 506),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.5, 0),
+    BackgroundColor3 = C.bg,
+    BorderSizePixel = 0,
+    Active = true,
+}, ScreenGui)
+corner(MainFrame, 6)
+stroke(MainFrame, C.border, 2)
+
+local Scale = new("UIScale", {}, MainFrame)
+local function updateScale()
+    local cam = Workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+    Scale.Scale = math.clamp(math.min((vp.Y * 0.9) / 506, (vp.X * 0.9) / 300), 0.5, 1.2)
+end
+updateScale()
+do
+    local cam = Workspace.CurrentCamera
+    if cam then track(cam:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)) end
+end
+
+-- Cabecalho (transparente: sem UICorner necessario)
+local Header = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 40),
+    BackgroundTransparency = 1,
+    Active = true,
+}, MainFrame)
+
+label(Header, {
+    Position = UDim2.new(0, 8, 0, 6), Size = UDim2.new(0, 24, 0, 24),
+    Text = "⚙", TextSize = 20, TextColor3 = C.gear,
+    TextXAlignment = Enum.TextXAlignment.Center, TextStrokeTransparency = 1,
+})
+label(Header, {
+    Position = UDim2.new(0, 36, 0, 4), Size = UDim2.new(0, 228, 0, 18),
+    Text = CONFIG.TITLE, TextSize = 15, TextXAlignment = Enum.TextXAlignment.Center,
+})
+label(Header, {
+    Position = UDim2.new(0, 36, 0, 22), Size = UDim2.new(0, 228, 0, 14),
+    Text = CONFIG.SUBTITLE, TextSize = 9, TextColor3 = C.discord,
+    Font = Enum.Font.GothamBold, TextXAlignment = Enum.TextXAlignment.Center,
+})
+
+local CloseBtn = new("TextButton", {
+    Size = UDim2.new(0, 22, 0, 22),
+    Position = UDim2.new(1, -28, 0, 6),
+    BackgroundTransparency = 1,
+    Text = "X",
+    TextColor3 = C.closeX,
+    TextSize = 18,
+    Font = FONT,
+    TextStrokeTransparency = 0.4,
+    TextStrokeColor3 = BLACK,
+}, Header)
+
+-- Barra REFRESH (status curto a esquerda)
+local RefreshBtn = button(MainFrame, {
+    Position = UDim2.new(0, 6, 0, 42),
+    Size = UDim2.new(0, 288, 0, 24),
+    BackgroundColor3 = C.green,
+    Text = "REFRESH",
+}, C.greenD)
+local StatusLabel = label(RefreshBtn, {
+    Position = UDim2.new(0, 8, 0, 0), Size = UDim2.new(0, 104, 1, 0),
+    Text = "PRONTO", TextSize = 10,
+})
+
+-- Lista (pool de cards; sem UICorner: ScrollingFrame nao arredonda conteudo)
+local ScrollBox = new("ScrollingFrame", {
+    Position = UDim2.new(0, 6, 0, 72),
+    Size = UDim2.new(1, -12, 1, -180),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollBarThickness = 3,
+    VerticalScrollBarInset = Enum.ScrollBarInset.Always,
+}, MainFrame)
+new("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 4),
+}, ScrollBox)
+
+local EmptyLabel = label(ScrollBox, {
+    Size = UDim2.new(1, 0, 0, 50), LayoutOrder = 0, Visible = false,
+    TextWrapped = true, TextColor3 = C.muted, TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Center, TextStrokeTransparency = 1,
+})
+
+-- Botoes inferiores (3 linhas, como no print)
+local AllBtn = button(MainFrame, {
+    Position = UDim2.new(0, 6, 1, -102), Size = UDim2.new(0, 142, 0, 28),
+    BackgroundColor3 = C.dark, Text = "ALL SERVERS",
+}, C.border)
+local MyBtn = button(MainFrame, {
+    Position = UDim2.new(0, 152, 1, -102), Size = UDim2.new(0, 142, 0, 28),
+    BackgroundColor3 = C.green, Text = "MY SERVER",
+}, C.greenD)
+local MinBtn = button(MainFrame, {
+    Position = UDim2.new(0, 6, 1, -70), Size = UDim2.new(0, 168, 0, 28),
+    BackgroundColor3 = C.blue, Text = "MIN RARITY:  Any", TextSize = 12,
+}, C.border)
+local PremiumBtn = button(MainFrame, {
+    Position = UDim2.new(0, 178, 1, -70), Size = UDim2.new(0, 116, 0, 28),
+    BackgroundColor3 = C.gold, Text = "⭐ PREMIUM", TextSize = 13,
+}, C.border)
+local JoinBtn = button(MainFrame, {
+    Position = UDim2.new(0, 6, 1, -38), Size = UDim2.new(0, 288, 0, 32),
+    BackgroundColor3 = C.red, Text = "JOIN RANDOM SERVER", TextSize = 16,
+}, C.border)
+
+local function setStatus(text)
+    if alive and StatusLabel and StatusLabel.Parent then
+        setProp(StatusLabel, "Text", text)
+    end
+end
+
+local function updateTabs()
+    if not alive then return end
+    AllBtn.BackgroundColor3 = (state.view == "all") and C.green or C.dark
+    MyBtn.BackgroundColor3 = (state.view == "my") and C.green or C.dark
+    AllBtn.Text = "ALL SERVERS" .. (state.active and " ●" or "")
+end
+
+local function updateMinBtn()
+    MinBtn.Text = "MIN RARITY:  " .. CONFIG.RARITY_LEVELS[state.minRarity][1]
+end
+
+-- Arraste manual pelo cabecalho (Draggable e obsoleto)
+do
+    local dragging, dragStart, startPos
+    track(Header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+            local c; c = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    c:Disconnect()
+                end
+            end)
+        end
+    end))
+    track(UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            MainFrame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y
+            )
+        end
+    end))
+end
+
+----------------------------------------------------------------------
+-- FORMATACAO
+----------------------------------------------------------------------
+local function fmtNum(n)
+    if n == nil then return "N/D" end
+    local a = math.abs(n)
+    if a >= 1e12 then return string.format("%.2fT", n / 1e12) end
+    if a >= 1e9 then return string.format("%.2fB", n / 1e9) end
+    if a >= 1e6 then return string.format("%.2fM", n / 1e6) end
+    if a >= 1e3 then return string.format("%.2fK", n / 1e3) end
+    if n % 1 == 0 then return tostring(n) end
+    return string.format("%.2f", n)
+end
+
+local function fmtAgo(t)
+    if not t then return "" end
+    local d = math.max(0, os.time() - t)
+    if d < 60 then return d .. "s ago" end
+    if d < 3600 then return math.floor(d / 60) .. "m ago" end
+    return math.floor(d / 3600) .. "h ago"
+end
+
+local function esc(s)
+    s = tostring(s)
+    s = s:gsub("&", "&amp;")
+    s = s:gsub("<", "&lt;")
+    s = s:gsub(">", "&gt;")
+    return s
+end
+
+----------------------------------------------------------------------
+-- LEITURA DE DADOS REAIS
+----------------------------------------------------------------------
+local function toSet(list)
+    local s = {}
+    for _, n in ipairs(list) do s[n:lower()] = true end
+    return s
+end
+local VALUE_SET  = toSet(CONFIG.VALUE_NAMES)
+local WEIGHT_SET = toSet(CONFIG.WEIGHT_NAMES)
+
+local PATTERNS = {}
+for _, p in ipairs(CONFIG.NAME_PATTERNS) do PATTERNS[#PATTERNS + 1] = p:lower() end
+
+local function toNumber(v)
+    if type(v) == "number" then return v end
+    if type(v) == "string" then return tonumber((v:gsub("[^%d%.%-]", ""))) end
+    return nil
+end
+
+local function readNumber(obj, names, nameSet)
+    for _, n in ipairs(names) do
+        local v = toNumber(obj:GetAttribute(n))
+        if v then return v end
+    end
+    local pp = obj.PrimaryPart
+    if pp then
+        for _, n in ipairs(names) do
+            local v = toNumber(pp:GetAttribute(n))
+            if v then return v end
+        end
+    end
+    for _, c in ipairs(obj:GetDescendants()) do
+        if (c:IsA("NumberValue") or c:IsA("IntValue")) and nameSet[c.Name:lower()] then
+            return c.Value
+        end
+    end
+    return nil
+end
+
+local function readFirstString(obj, names)
+    for _, n in ipairs(names) do
+        local v = obj:GetAttribute(n)
+        if v ~= nil then return tostring(v) end
+    end
+    return nil
+end
+
+local function readIcon(obj)
+    for _, n in ipairs(CONFIG.ICON_NAMES) do
+        local v = obj:GetAttribute(n)
+        if type(v) == "number" then return "rbxassetid://" .. tostring(math.floor(v)) end
+        if type(v) == "string" and v:find("rbxasset", 1, true) then return v end
+    end
+    return nil
+end
+
+local function hasAnyAttribute(obj, names)
+    for _, n in ipairs(names) do
+        if obj:GetAttribute(n) ~= nil then return true end
+    end
+    return false
+end
+
+local function isCandidate(m)
+    local lname = m.Name:lower()
+    for _, p in ipairs(PATTERNS) do
+        if lname:find(p, 1, true) then
+            return not Players:GetPlayerFromCharacter(m)
+        end
+    end
+    if hasAnyAttribute(m, CONFIG.WEIGHT_NAMES) then
+        return not Players:GetPlayerFromCharacter(m)
+    end
+    return false
+end
+
+local function insideMatched(obj, matched)
+    local p = obj.Parent
+    while p and p ~= Workspace do
+        if matched[p] then return true end
+        p = p.Parent
+    end
+    return false
+end
+
+local function buildInfo(m)
+    local weight = readNumber(m, CONFIG.WEIGHT_NAMES, WEIGHT_SET)
+    local value = readNumber(m, CONFIG.VALUE_NAMES, VALUE_SET)
+    local metric = (CONFIG.RANK_BY == "Value") and value or weight
+    return {
+        model = m,
+        name = m.Name,
+        weight = weight,
+        value = value,
+        rarity = readFirstString(m, CONFIG.RARITY_NAMES),
+        mutation = readFirstString(m, CONFIG.MUTATION_NAMES),
+        icon = readIcon(m),
+        metric = metric or -1,
+        jobId = game.JobId,
+        placeId = game.PlaceId,
+        foundAt = os.time(),
+    }
+end
+
+-- Varredura em fatias: cede o frame quando passa do orcamento de CPU (sem lag)
+local function scanEggs(budget)
+    local results, matched = {}, {}
+    local descendants = Workspace:GetDescendants()
+    local t0 = os.clock()
+
+    for i = 1, #descendants do
+        if not alive then return results end
+        local d = descendants[i]
+        if d.ClassName == "Model" and isCandidate(d) and not insideMatched(d, matched) then
+            matched[d] = true
+            local ok, info = pcall(buildInfo, d)
+            if ok and info then results[#results + 1] = info end
+        end
+        if i % 256 == 0 and os.clock() - t0 > budget then
+            task.wait()
+            t0 = os.clock()
+        end
+    end
+
+    table.sort(results, function(a, b) return a.metric > b.metric end)
+    return results
+end
+
+----------------------------------------------------------------------
+-- LISTA (POOL DE CARDS REAPROVEITADOS)
+----------------------------------------------------------------------
+local myItems = {}                                    -- itens do servidor atual
+local liveModels = setmetatable({}, { __mode = "k" }) -- rec salvo -> Model (so em memoria)
+local scanLock = false
+local onHere -- definido mais abaixo
+
+local cards = {}
+
+local function buildCard()
+    local c = {}
+    c.frame = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 64),
+        BackgroundColor3 = C.card,
+        BorderSizePixel = 0,
+        Visible = false,
+    }, ScrollBox)
+    corner(c.frame, 4)
+
+    c.icon = new("ImageLabel", {
+        Size = UDim2.new(0, 40, 0, 40),
+        Position = UDim2.new(0, 6, 0, 4),
+        BackgroundColor3 = C.iconBg,
+        BorderSizePixel = 0,
+        ScaleType = Enum.ScaleType.Fit,
+        Image = "",
+    }, c.frame)
+    corner(c.icon, 4)
+    c.emoji = label(c.icon, {
+        Size = UDim2.new(1, 0, 1, 0), Text = "🥚", TextSize = 20,
+        TextXAlignment = Enum.TextXAlignment.Center, TextStrokeTransparency = 1,
+    })
+
+    c.name = label(c.frame, {
+        Position = UDim2.new(0, 54, 0, 4), Size = UDim2.new(0, 152, 0, 16),
+        TextSize = 13, RichText = true,
+    })
+    c.valueL = label(c.frame, {
+        Position = UDim2.new(0, 54, 0, 21), Size = UDim2.new(0, 94, 0, 16),
+        TextSize = 12, TextColor3 = C.money,
+    })
+    c.weightL = label(c.frame, {
+        Position = UDim2.new(0, 150, 0, 22), Size = UDim2.new(0, 56, 0, 14),
+        TextSize = 9, Font = Enum.Font.GothamBold,
+    })
+    c.rarityL = label(c.frame, {
+        Position = UDim2.new(0, 6, 0, 46), Size = UDim2.new(0, 70, 0, 14), TextSize = 11,
+    })
+    c.mutL = label(c.frame, {
+        Position = UDim2.new(0, 80, 0, 46), Size = UDim2.new(0, 100, 0, 14),
+        TextSize = 11, TextColor3 = C.muted,
+    })
+    c.timeL = label(c.frame, {
+        Position = UDim2.new(1, -72, 0, 44), Size = UDim2.new(0, 66, 0, 14),
+        TextSize = 10, TextColor3 = C.ago, TextXAlignment = Enum.TextXAlignment.Center,
+    })
+    c.here = button(c.frame, {
+        Position = UDim2.new(1, -72, 0, 8), Size = UDim2.new(0, 66, 0, 26),
+        BackgroundColor3 = C.here, Text = "HERE", TextSize = 14,
+    }, C.border)
+    c.here.Activated:Connect(function()
+        if c.rec and onHere then onHere(c.rec) end
+    end)
+
+    return c
+end
+
+local function getCard(i)
+    while #cards < i do cards[#cards + 1] = buildCard() end
+    return cards[i]
+end
+
+local function fillCard(c, rec, idx)
+    c.rec = rec
+    setProp(c.frame, "LayoutOrder", idx)
+    setProp(c.frame, "Visible", true)
+
+    local rank = rarityRank(rec.rarity)
+    local color = RARITY_COLORS[rank] or C.text
+
+    setProp(c.name, "Text", string.format('<font color="#FFFFFF">#%d</font> <font color="#%s">%s</font>',
+        idx, color:ToHex(), esc(rec.name)))
+    setProp(c.valueL, "Text", "$" .. fmtNum(rec.value) .. CONFIG.VALUE_SUFFIX)
+    setProp(c.weightL, "Text", fmtNum(rec.weight) .. " KG")
+    setProp(c.rarityL, "Text", rec.rarity or "N/D")
+    setProp(c.rarityL, "TextColor3", color)
+    setProp(c.mutL, "Text", rec.mutation or "")
+    setProp(c.timeL, "Text", fmtAgo(rec.foundAt))
+
+    if rec.icon then
+        setProp(c.icon, "Image", rec.icon)
+        setProp(c.emoji, "Visible", false)
+    else
+        setProp(c.icon, "Image", "")
+        setProp(c.emoji, "Visible", true)
+    end
+end
+
+local function passesRarity(rec)
+    return state.minRarity <= 1 or rarityRank(rec.rarity) >= state.minRarity
+end
+
+local function render()
+    if not alive then return end
+    local list = (state.view == "all") and state.items or myItems
+    local shown = 0
+
+    for _, rec in ipairs(list) do
+        if shown >= CONFIG.MAX_CARDS then break end
+        if passesRarity(rec) then
+            shown = shown + 1
+            fillCard(getCard(shown), rec, shown)
+        end
+    end
+    for i = shown + 1, #cards do
+        setProp(cards[i].frame, "Visible", false)
+        cards[i].rec = nil
+    end
+
+    if shown == 0 then
+        setProp(EmptyLabel, "Text", (state.view == "all")
+            and "Nenhum item salvo.\nToque em ALL SERVERS para varrer."
+            or "Nenhum item detectado neste servidor.")
+        setProp(EmptyLabel, "Visible", true)
+    else
+        setProp(EmptyLabel, "Visible", false)
+    end
+end
+
+-- Atualiza so os textos "Xm ago" a cada 15s (barato)
+task.spawn(function()
+    while alive do
+        task.wait(15)
+        for _, c in ipairs(cards) do
+            if c.rec and c.frame.Visible then
+                setProp(c.timeL, "Text", fmtAgo(c.rec.foundAt))
+            end
+        end
+    end
+end)
+
+----------------------------------------------------------------------
+-- TELEPORTE LOCAL
+----------------------------------------------------------------------
+local function teleportToModel(model)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (hrp and hum) or hum.Health <= 0 then
+        setStatus("SEM CHAR")
+        return
+    end
+    if not model or not model.Parent then
+        setStatus("ITEM SUMIU")
+        return
+    end
+    local ok, pivot = pcall(function() return model:GetPivot() end)
+    if not ok then
+        setStatus("ERRO")
+        return
+    end
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { char, model }
+    local hit = Workspace:Raycast(pivot.Position + Vector3.new(0, 4, 0), Vector3.new(0, -300, 0), params)
+
+    local ground = hit and hit.Position or pivot.Position
+    local target = ground + Vector3.new(0, hum.HipHeight + hrp.Size.Y / 2 + 1, 0)
+
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+    char:PivotTo(CFrame.new(target) * (hrp.CFrame - hrp.CFrame.Position))
+    setStatus("TELEPORTADO")
+end
+
+----------------------------------------------------------------------
+-- API DE SERVIDORES PUBLICOS
+----------------------------------------------------------------------
+local function httpGetJson(url)
+    if not httpRequest then return nil, "executor sem request/http_request" end
+    for attempt = 1, 4 do
+        local ok, res = pcall(httpRequest, { Url = url, Method = "GET" })
+        if ok and res then
+            local code = res.StatusCode
+            if code == 200 then
+                local okJ, data = pcall(HttpService.JSONDecode, HttpService, res.Body)
+                if okJ then return data end
+                return nil, "JSON invalido"
+            elseif code == 429 then
+                setStatus("LIMITE API")
+                task.wait(4 * attempt)
+            else
+                return nil, "HTTP " .. tostring(code)
+            end
+        else
+            task.wait(2)
+        end
+    end
+    return nil, "falha apos varias tentativas"
+end
+
+local function fetchServers()
+    setStatus("BUSCANDO...")
+    local needed = (CONFIG.MAX_SERVERS - state.scanned) + 20
+    local seen, fresh = {}, {}
+    local cursor
+
+    for _ = 1, 6 do
+        if not alive then break end
+        local url = string.format(
+            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&excludeFullGames=true&limit=100",
+            game.PlaceId
+        )
+        if cursor then url = url .. "&cursor=" .. HttpService:UrlEncode(cursor) end
+
+        local data, err = httpGetJson(url)
+        if not data then
+            log("erro na API:", err)
+            setStatus("ERRO API")
+            break
+        end
+
+        for _, s in ipairs(data.data or {}) do
+            if s.id and not seen[s.id] and s.id ~= game.JobId and not state.visited[s.id]
+                and (s.maxPlayers or 0) - (s.playing or 0) >= CONFIG.MIN_FREE_SLOTS then
+                seen[s.id] = true
+                fresh[#fresh + 1] = s.id
+            end
+        end
+
+        cursor = data.nextPageCursor
+        if not cursor or #fresh >= needed then break end
+        task.wait(1)
+    end
+
+    for i = #fresh, 2, -1 do -- embaralha para espalhar a carga
+        local j = math.random(i)
+        fresh[i], fresh[j] = fresh[j], fresh[i]
+    end
+    for _, id in ipairs(fresh) do state.queue[#state.queue + 1] = id end
+end
+
+----------------------------------------------------------------------
+-- TELEPORTE ENTRE SERVIDORES
+----------------------------------------------------------------------
+local teleportFailed, lastFail = false, ""
+track(TeleportService.TeleportInitFailed:Connect(function(player, result, msg)
+    if player == LocalPlayer then
+        teleportFailed = true
+        lastFail = tostring(result) .. (msg and (": " .. tostring(msg)) or "")
+    end
+end))
+
+local queuedOnce = false
+local function ensureQueueOnTeleport()
+    if queuedOnce then return end
+    local q = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+    if not q then
+        log("queue_on_teleport indisponivel; use a pasta autoexec do executor.")
+        return
+    end
+    local code
+    if CONFIG.RELOAD_URL ~= "" then
+        code = string.format("loadstring(game:HttpGet(%q))()", CONFIG.RELOAD_URL)
+    elseif isfile and isfile(CONFIG.RELOAD_FILE) then
+        code = string.format("loadstring(readfile(%q))()", CONFIG.RELOAD_FILE)
+    else
+        log("Defina RELOAD_URL ou RELOAD_FILE (ou use autoexec) para reexecutar apos o teleporte.")
+        return
+    end
+    if pcall(q, code) then queuedOnce = true end
+end
+
+-- Retorna false quando o teleporte falha ou estoura o tempo (se der certo, o cliente fecha)
+local function tryTeleport(jobId, placeId)
+    teleportFailed = false
+    local ok, err = pcall(function()
+        TeleportService:TeleportToPlaceInstance(placeId or game.PlaceId, jobId, LocalPlayer, nil, state)
+    end)
+    if not ok then
+        lastFail = tostring(err)
+        return false
+    end
+    local t0 = os.clock()
+    while alive and not teleportFailed and os.clock() - t0 < CONFIG.TELEPORT_TIMEOUT do
+        task.wait(0.25)
+    end
+    return false
+end
+
+local function printRecord(tag, record)
+    local ok, json = pcall(HttpService.JSONEncode, HttpService, record)
+    print("[TENSHI_RADAR] " .. tag .. " " .. (ok and json or "erro de serializacao"))
+end
+
+----------------------------------------------------------------------
+-- ALL SERVERS (hop + coleta)
+----------------------------------------------------------------------
+local function finishMulti(reason)
+    state.active = false
+    saveState()
+    updateTabs()
+    setStatus("FIM")
+    log(string.format("scan encerrado (%s): %d servidores.", reason, state.scanned))
+    if state.items[1] then printRecord("BEST", state.items[1]) end
+end
+
+local function stopMulti()
+    state.active = false
+    saveState()
+    updateTabs()
+    setStatus("PARADO")
+end
+
+local function hopNext()
+    while alive and state.active do
+        if state.scanned >= CONFIG.MAX_SERVERS then
+            finishMulti("limite atingido")
+            return
+        end
+        if #state.queue == 0 then fetchServers() end
+        if #state.queue == 0 then
+            finishMulti("sem mais servidores")
+            return
+        end
+
+        local jobId = table.remove(state.queue)
+        markVisited(jobId)
+        state.hops = state.hops + 1
+        saveState()
+        ensureQueueOnTeleport()
+
+        setStatus(string.format("ENTRANDO %d/%d", state.scanned, CONFIG.MAX_SERVERS))
+        tryTeleport(jobId)
+
+        if not alive or not state.active then return end
+        log("falha ao entrar:", lastFail)
+        setStatus("PULANDO...")
+        task.wait(CONFIG.HOP_DELAY)
+    end
+end
+
+local function mergeIntoSaved(eggs)
+    for i = 1, math.min(#eggs, CONFIG.PER_SERVER_TOP) do
+        local e = eggs[i]
+        if passesRarity(e) then
+            local rec = {
+                name = e.name, weight = e.weight, value = e.value,
+                rarity = e.rarity, mutation = e.mutation, icon = e.icon,
+                metric = e.metric, jobId = game.JobId, placeId = game.PlaceId,
+                foundAt = os.time(),
+            }
+            liveModels[rec] = e.model
+            state.items[#state.items + 1] = rec
+        end
+    end
+    table.sort(state.items, function(a, b) return (a.metric or -1) > (b.metric or -1) end)
+    while #state.items > CONFIG.MAX_SAVED do table.remove(state.items) end
+end
+
+local function scanForHop()
+    if scanLock then return end
+    scanLock = true
+    setStatus("CARREGANDO")
+    task.wait(CONFIG.SETTLE_DELAY) -- itens podem spawnar com atraso
+
+    local ok, err = pcall(function()
+        local eggs = scanEggs(CONFIG.HOP_FRAME_BUDGET)
+        myItems = eggs
+        markVisited(game.JobId)
+        state.scanned = state.scanned + 1
+
+        local top = eggs[1]
+        local rec = { jobId = game.JobId, placeId = game.PlaceId, found = #eggs }
+        if top then
+            rec.name, rec.weight, rec.value = top.name, top.weight, top.value
+            rec.rarity, rec.mutation, rec.metric = top.rarity, top.mutation, top.metric
+        end
+        printRecord("SERVER", rec)
+
+        mergeIntoSaved(eggs)
+        saveState()
+        updateTabs()
+        render()
+        setStatus(string.format("SCAN %d/%d", state.scanned, CONFIG.MAX_SERVERS))
+    end)
+    scanLock = false
+
+    if not ok then
+        log("erro no scan:", err)
+        setStatus("ERRO SCAN")
+    end
+    if alive and state.active then hopNext() end
+end
+
+local function startMulti()
+    if not httpRequest then
+        log("executor sem request/http_request")
+        setStatus("SEM REQUEST")
+        return
+    end
+    if scanLock then setStatus("OCUPADO") return end
+    state.active = true
+    state.scanned, state.hops = 0, 0
+    state.visited, state.queue = {}, {}
+    markVisited(game.JobId)
+    saveState()
+    updateTabs()
+    task.spawn(scanForHop)
+end
+
+----------------------------------------------------------------------
+-- MY SERVER
+----------------------------------------------------------------------
+local function runMyScan()
+    if scanLock then setStatus("OCUPADO") return end
+    scanLock = true
+    setStatus("ESCANEANDO")
+    task.spawn(function()
+        local ok, res = pcall(scanEggs, CONFIG.FRAME_BUDGET)
+        scanLock = false
+        if ok then
+            myItems = res
+            render()
+            setStatus(#res == 0 and "VAZIO" or (#res .. " ITENS"))
+        else
+            log("erro no scan:", res)
+            setStatus("ERRO SCAN")
+        end
+    end)
+end
+
+----------------------------------------------------------------------
+-- ACOES DOS BOTOES
+----------------------------------------------------------------------
+local function joinServer(jobId, placeId)
+    state.active = false
+    saveState()
+    updateTabs()
+    ensureQueueOnTeleport()
+    setStatus("ENTRANDO...")
+    task.spawn(function()
+        if not tryTeleport(jobId, placeId) then
+            log("falha ao entrar:", lastFail)
+            setStatus("FALHOU")
+        end
+    end)
+end
+
+onHere = function(rec)
+    local model = rec.model or liveModels[rec]
+    if rec.jobId == nil or rec.jobId == game.JobId then
+        teleportToModel(model)
+    else
+        joinServer(rec.jobId, rec.placeId)
+    end
+end
+
+local joining = false
+local function joinRandomServer()
+    if not httpRequest then
+        setStatus("SEM REQUEST")
+        return
+    end
+    state.active = false
+    updateTabs()
+    if #state.queue == 0 then fetchServers() end
+
+    for _ = 1, 5 do
+        if not alive then return end
+        if #state.queue == 0 then break end
+        local jobId = table.remove(state.queue, math.random(#state.queue))
+        markVisited(jobId)
+        saveState()
+        ensureQueueOnTeleport()
+        setStatus("ENTRANDO...")
+        tryTeleport(jobId)
+        if not alive then return end
+        log("falha ao entrar:", lastFail)
+    end
+    setStatus("FALHOU")
+end
+
+RefreshBtn.Activated:Connect(function()
+    if state.view == "my" then
+        runMyScan()
+    elseif state.active then
+        render()
+        setStatus("ATUALIZADO")
+    else
+        startMulti()
+    end
+end)
+
+AllBtn.Activated:Connect(function()
+    if state.view == "all" and state.active then
+        stopMulti()
+        return
+    end
+    state.view = "all"
+    updateTabs()
+    render()
+    if not state.active then startMulti() end
+end)
+
+MyBtn.Activated:Connect(function()
+    state.view = "my"
+    saveState()
+    updateTabs()
+    render()
+    if not scanLock then runMyScan() end
+end)
+
+MinBtn.Activated:Connect(function()
+    state.minRarity = state.minRarity % #CONFIG.RARITY_LEVELS + 1
+    updateMinBtn()
+    saveState()
+    render()
+end)
+
+PremiumBtn.Activated:Connect(function()
+    if CONFIG.ON_PREMIUM then
+        local ok, err = pcall(CONFIG.ON_PREMIUM)
+        if not ok then log("ON_PREMIUM:", err) end
+    else
+        setStatus("EM BREVE")
+    end
+end)
+
+JoinBtn.Activated:Connect(function()
+    if joining then return end
+    joining = true
+    task.spawn(function()
+        local ok, err = pcall(joinRandomServer)
+        joining = false
+        if not ok then
+            log("erro:", err)
+            setStatus("ERRO")
+        end
+    end)
+end)
+
+CloseBtn.Activated:Connect(function()
+    state.active = false
+    saveState()
+    env.TenshiRadarCleanup()
+end)
+
+----------------------------------------------------------------------
+-- INICIO
+----------------------------------------------------------------------
+updateTabs()
+updateMinBtn()
+render()
+
+if resuming then
+    task.spawn(scanForHop)
+elseif state.view == "my" then
+    runMyScan()
+end

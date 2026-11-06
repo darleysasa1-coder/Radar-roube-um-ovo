@@ -1,0 +1,225 @@
+EGG FINDER PRO - PROJETO COMPLETO EM UM ARQUIVO
+Crie cada arquivo abaixo com o nome e a pasta indicados, colando o conteudo entre as marcas.
+
+==================================================
+ARQUIVO: manifest.json
+==================================================
+{
+  "manifest_version": 3,
+  "name": "Egg Finder Pro",
+  "version": "1.0.0",
+  "description": "Finder e Server Hop para Roube um Ovo (Place ID 107778070777162), usando apenas endpoints públicos.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://games.roblox.com/*"],
+  "optional_host_permissions": ["https://*/*"],
+  "background": { "service_worker": "js/bg.js" },
+  "action": { "default_title": "Egg Finder Pro" }
+}
+
+
+==================================================
+ARQUIVO: app.html
+==================================================
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Egg Finder Pro</title><link rel="stylesheet" href="css/app.css"></head>
+<body>
+<header><div class="brand">Egg Finder<b>Pro</b></div><div id="live" class="live"><i></i><span id="liveTxt">parado</span></div></header>
+<main>
+ <section id="finder" class="view on">
+  <div class="bar">
+   <button class="chip on" data-sort="gen">Geração</button><button class="chip" data-sort="size">Tamanho</button>
+   <button class="chip" data-sort="recent">Recente</button><button class="chip" data-sort="rarity">Raro</button>
+   <button class="chip ghost" id="fToggle">Filtros</button>
+  </div>
+  <div id="fPanel" class="panel" hidden>
+   <label>Geração mín.<input id="fMin" placeholder="ex.: 10M"></label>
+   <label>Geração máx.<input id="fMax" placeholder="ex.: 5B"></label>
+   <label>Tamanho (x) mín.<input id="fSize" inputmode="decimal" placeholder="ex.: 2"></label>
+   <label>Tamanho exato (x)<input id="fExact" inputmode="decimal" placeholder="ex.: 4.15"></label>
+   <label>Idade máx. (s)<input id="fAge" inputmode="numeric" placeholder="ex.: 120"></label>
+   <label>Busca por nome<input id="fName"></label>
+   <div id="fRar" class="chips"></div>
+  </div>
+  <div class="ctl"><button id="bStart" class="btn">Iniciar</button><button id="bPause" class="btn alt">Pausar</button><button id="bReset" class="btn alt">Reiniciar</button><span id="count"></span></div>
+  <div id="list" class="list"></div><button id="more" class="btn alt" hidden>Mostrar mais</button>
+ </section>
+ <section id="hop" class="view">
+  <div class="panel2"><h2>Server Hop</h2>
+   <p class="mut">Busca servidores públicos reais e entra em um válido que você ainda não visitou.</p>
+   <div class="ctl"><button id="hOnce" class="btn">Buscar e entrar</button><button id="hAuto" class="btn alt">Iniciar troca automática</button></div>
+   <div id="hInfo" class="mut"></div></div>
+ </section>
+ <section id="favs" class="view"><div id="favList" class="list"></div></section>
+ <section id="hist" class="view"><div class="ctl"><button id="hClear" class="btn alt">Limpar histórico</button></div><div id="histList" class="list"></div></section>
+ <section id="sets" class="view"><div id="setForm" class="panel2"></div></section>
+</main>
+<nav id="nav"><button data-v="finder" class="on">Finder</button><button data-v="hop">Hop</button><button data-v="favs">Favoritos</button><button data-v="hist">Histórico</button><button data-v="sets">Ajustes</button></nav>
+<div id="toast"></div>
+<script src="js/app.js"></script></body></html>
+
+
+==================================================
+ARQUIVO: css/app.css
+==================================================
+:root{--bg:#0a1130;--p:#131c48;--p2:#1b2660;--tx:#e8edff;--mut:#8f9bd1;--cy:#38e1f5;--pu:#8b5cf6;--ye:#ffd23f;--or:#ff7a1a;--ok:#3ddc97}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 0 calc(64px + env(safe-area-inset-bottom))}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;position:sticky;top:0;background:var(--bg);z-index:5;border-bottom:1px solid var(--p2)}
+.brand{font-weight:800;font-size:18px}.brand b{color:var(--cy);margin-left:5px}
+.live{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:12px}.live i{width:9px;height:9px;border-radius:50%;background:var(--mut)}
+.live.on i{background:var(--ok);animation:pl 1.2s infinite}@keyframes pl{50%{box-shadow:0 0 0 6px #3ddc9722}}
+main{max-width:720px;margin:auto;padding:10px 12px}.view{display:none}.view.on{display:block}
+.bar{display:flex;gap:7px;overflow-x:auto;padding-bottom:8px;scrollbar-width:none}
+.chip{flex:none;border:1px solid var(--p2);background:var(--p);color:var(--tx);border-radius:999px;padding:8px 14px;font-weight:700}
+.chip.on{background:var(--pu);border-color:var(--pu)}.chip.ghost{border-color:var(--cy);color:var(--cy)}
+.panel,.panel2{background:var(--p);border-radius:16px;padding:12px;margin:6px 0 10px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.panel2{grid-template-columns:1fr}.panel2 h2{margin:0}[hidden]{display:none!important}
+label{display:flex;flex-direction:column;font-size:12px;color:var(--mut);gap:4px}label.row{flex-direction:row;align-items:center;justify-content:space-between}
+input{background:var(--bg);color:var(--tx);border:1px solid var(--p2);border-radius:10px;padding:9px;font-size:15px;width:100%}
+input[type=checkbox]{width:22px;height:22px}.chips{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}
+.btn{background:var(--or);color:#1a0b00;border:0;border-radius:12px;padding:11px 16px;font-weight:800;font-size:15px}.btn.alt{background:var(--p2);color:var(--tx)}
+.ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}#count{margin-left:auto;color:var(--cy);font-weight:700}
+.list{display:flex;flex-direction:column;gap:10px;margin:8px 0}
+.card{display:grid;grid-template-columns:56px 1fr auto;gap:10px;align-items:center;background:linear-gradient(135deg,var(--p),#17205a);border:1px solid var(--p2);border-radius:18px;padding:10px;content-visibility:auto;contain-intrinsic-size:80px}
+.card.new{animation:nw 1.4s}@keyframes nw{from{border-color:var(--ye);box-shadow:0 0 0 3px #ffd23f44}}
+.card.rare{border-color:var(--ye)}
+.img{width:56px;height:56px;border-radius:14px;background:var(--bg);display:grid;place-items:center;font-size:26px;overflow:hidden}.img img{width:100%;height:100%;object-fit:cover}
+.nm{font-weight:800;color:var(--cy);overflow-wrap:anywhere}.meta{font-size:13px;color:var(--mut);margin-top:2px}.meta b{color:var(--ye)}.meta em{color:#c4b0ff;font-style:normal}
+.act{display:flex;flex-direction:column;gap:6px;align-items:stretch}.act .btn{padding:10px 14px}.star{background:none;border:0;color:var(--mut);font-size:20px}.star.on{color:var(--ye)}
+.empty{background:var(--p);border-radius:16px;padding:18px;color:var(--mut)}.empty b{color:var(--tx)}.mut{color:var(--mut);font-size:13px}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#0d1540;border-top:1px solid var(--p2);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;border:0;color:var(--mut);padding:14px 2px;font-weight:700;font-size:13px}nav button.on{color:var(--cy);box-shadow:inset 0 2px var(--cy)}
+#toast{position:fixed;left:12px;right:12px;bottom:78px;background:var(--p2);border:1px solid var(--cy);padding:12px;border-radius:12px;display:none;z-index:9}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+
+
+==================================================
+ARQUIVO: js/bg.js
+==================================================
+chrome.action.onClicked.addListener(() => chrome.tabs.create({ url: chrome.runtime.getURL("app.html") }));
+
+
+==================================================
+ARQUIVO: js/app.js
+==================================================
+"use strict";
+const PLACE="107778070777162",API=`https://games.roblox.com/v1/games/${PLACE}/servers/Public`;
+const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const DEF={feedUrl:"",refresh:15,perPage:30,auto:true,notify:true,minGen:"0",minSize:0,ttl:600,rarityOrder:"Common,Uncommon,Rare,Epic,Legendary,Mythic,Secret",hopMin:1,hopMax:1,hopEvery:10};
+const FIELDS=[["feedUrl","URL da fonte de dados (JSON, https)","text"],["refresh","Intervalo de atualização (s)","number"],["perPage","Resultados por página","number"],["minGen","Rendimento mínimo desejado (ex.: 10M)","text"],["minSize","Multiplicador mínimo (x)","number"],["rarityOrder","Ordem de raridade (menor para maior)","text"],["ttl","Expirar resultados após (s)","number"],["hopMin","Hop: jogadores mínimos","number"],["hopMax","Hop: jogadores máximos","number"],["hopEvery","Hop: intervalo automático (s)","number"],["auto","Atualização automática","checkbox"],["notify","Notificações visuais","checkbox"]];
+let S={cfg:{...DEF},fav:[],hist:[],visited:[]};
+const store={async load(){const r=await chrome.storage.local.get("s");if(r.s)S={...S,...r.s,cfg:{...DEF,...r.s.cfg}}},save(){return chrome.storage.local.set({s:S})}};
+const items=new Map(),F={sort:"gen",dir:-1},rarSel=new Set();let page=1,running=false,timer=null,hopT=null,rarKey="";
+const lastJoin={};
+const parseNum=v=>{const m=String(v??"").trim().toLowerCase().replace(",",".").match(/^([\d.]+)\s*([kmbt])?$/);return m?parseFloat(m[1])*({k:1e3,m:1e6,b:1e9,t:1e12}[m[2]]||1):0};
+const fmt=n=>{for(const[v,s]of[[1e12,"T"],[1e9,"B"],[1e6,"M"],[1e3,"K"]])if(n>=v)return +(n/v).toFixed(2)+s;return ""+Math.round(n)};
+const age=t=>{const s=Math.max(0,(Date.now()-t)/1000|0);return s<60?s+"s":s<3600?(s/60|0)+"m":(s/3600|0)+"h"};
+const order=()=>S.cfg.rarityOrder.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
+const rank=r=>order().indexOf(String(r).toLowerCase())+1;
+const isRare=i=>{const n=order().length;return n>0&&rank(i.rarity)>n-3};
+let tt;function toast(m){const e=$("#toast");e.textContent=m;e.style.display="block";clearTimeout(tt);tt=setTimeout(()=>e.style.display="none",4000)}
+function setLive(t){$("#liveTxt").textContent=t;$("#live").classList.toggle("on",t==="buscando")}
+
+async function jf(url,opt){for(let i=0;i<3;i++){const r=await fetch(url,opt);if(r.status===429){await sleep(1500*(i+1));continue}if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}throw new Error("Limite de requisições (429). Aguarde um pouco.")}
+const q=c=>c?`&cursor=${encodeURIComponent(c)}`:"";
+async function servers(pages){let out=[],c="";for(let p=0;p<pages;p++){const d=await jf(`${API}?sortOrder=Asc&limit=100&excludeFullGames=true${q(c)}`);out.push(...d.data);c=d.nextPageCursor;if(!c)break}return out}
+async function check(id){let c="";for(let p=0;p<6;p++){const d=await jf(`${API}?sortOrder=Desc&limit=100${q(c)}`);const s=d.data.find(x=>x.id===id);if(s)return s.playing>=s.maxPlayers?"full":"ok";c=d.nextPageCursor;if(!c)return"gone"}return"unknown"}
+function launch(id){const a=document.createElement("a");a.href=`roblox://experiences/start?placeId=${PLACE}&gameInstanceId=${id}`;document.body.appendChild(a);a.click();a.remove()}
+
+async function join(jobId,name){
+ if(Date.now()-(lastJoin[jobId]||0)<20000)return toast("Você já tentou este servidor há pouco. Aguarde.");
+ lastJoin[jobId]=Date.now();toast("Verificando servidor…");
+ try{const st=await check(jobId);
+  if(st==="gone")return toast("Servidor indisponível: já foi encerrado.");
+  if(st==="full")return toast("Servidor cheio. Tente outro resultado.");
+  toast(st==="ok"?"Abrindo o Roblox…":"Não foi possível confirmar o servidor. Tentando abrir mesmo assim…")
+ }catch(e){toast("Verificação falhou ("+e.message+"). Tentando abrir mesmo assim…")}
+ S.hist.unshift({t:Date.now(),type:"join",name:name||"",jobId});if(!S.visited.includes(jobId))S.visited.push(jobId);S.hist.length=Math.min(S.hist.length,300);store.save();launch(jobId)}
+
+function norm(r){if(!r||typeof r!=="object")return null;const jobId=String(r.jobId||r.serverId||""),gen=Number(r.gen??r.generation);
+ if(!/^[0-9a-f-]{36}$/i.test(jobId)||!r.name||!isFinite(gen))return null;let t=Number(r.foundAt);if(t&&t<1e12)t*=1000;
+ return{jobId,name:String(r.name),gen,size:Number(r.size)||1,rarity:String(r.rarity||""),mut:String(r.mutation||r.mut||""),image:/^https:\/\//.test(r.image||"")?r.image:"",foundAt:t||Date.now()}}
+async function pull(){
+ if(!S.cfg.feedUrl){renderList();return}
+ try{const d=await jf(S.cfg.feedUrl,{cache:"no-store"}),arr=Array.isArray(d)?d:d.results;if(!Array.isArray(arr))throw new Error("JSON inválido: esperado uma lista");
+  let fresh=0;for(const r of arr){const it=norm(r);if(!it)continue;it.key=`${it.jobId}|${it.name}|${it.gen}`;
+   if(!items.has(it.key)){it.isNew=true;items.set(it.key,it);fresh++;S.hist.unshift({t:Date.now(),type:"find",name:`${it.name} ${fmt(it.gen)}/s`,jobId:it.jobId})}}
+  const lim=Date.now()-S.cfg.ttl*1000;for(const[k,v]of items)if(v.foundAt<lim)items.delete(k);
+  S.hist.length=Math.min(S.hist.length,300);store.save();if(fresh&&S.cfg.notify)toast(fresh+" novo(s) resultado(s)")
+ }catch(e){toast("Erro na busca: "+e.message)}
+ renderList()}
+async function tick(){if(!running)return;await pull();if(!running)return;if(S.cfg.auto)timer=setTimeout(tick,Math.max(5,S.cfg.refresh)*1000);else{running=false;setLive("parado")}}
+function start(){if(running)return;running=true;setLive("buscando");tick()}
+function pause(){running=false;clearTimeout(timer);setLive("pausado")}
+
+function view(){const b=parseNum($("#fMax").value),mg=Math.max(parseNum($("#fMin").value),parseNum(S.cfg.minGen)),ms=Math.max(Number($("#fSize").value)||0,Number(S.cfg.minSize)||0),ex=Number($("#fExact").value)||0,ag=Number($("#fAge").value)||0,nm=$("#fName").value.trim().toLowerCase(),now=Date.now();
+ const k={gen:i=>i.gen,size:i=>i.size,recent:i=>i.foundAt,rarity:i=>rank(i.rarity)*1e15+i.gen}[F.sort];
+ return[...items.values()].filter(i=>i.gen>=mg&&(!b||i.gen<=b)&&i.size>=ms&&(!ex||Math.abs(i.size-ex)<.005)&&(!ag||now-i.foundAt<=ag*1000)&&(!nm||i.name.toLowerCase().includes(nm))&&(!rarSel.size||rarSel.has(i.rarity))).sort((x,y)=>(k(x)-k(y))*F.dir)}
+function card(i){const fav=S.fav.some(f=>f.key===i.key);
+ return`<div class="card ${isRare(i)?"rare":""} ${i.isNew?"new":""}"><div class="img">${i.image?`<img src="${esc(i.image)}" loading="lazy" alt="">`:"🥚"}</div><div><div class="nm">${esc(i.name)}</div><div class="meta"><b>${fmt(i.gen)}/s</b> | ${esc(i.mut||"sem mutação")} | <span data-t="${i.foundAt}">${age(i.foundAt)}</span> | x${i.size}</div><div class="meta"><em>${esc(i.rarity||"sem raridade")}</em> — servidor ${esc(i.jobId.slice(0,8))}</div></div><div class="act"><button class="btn" data-join="${esc(i.key)}">JOIN</button><button class="star ${fav?"on":""}" data-fav="${esc(i.key)}" aria-label="Favoritar">${fav?"★":"☆"}</button></div></div>`}
+function renderList(){const r=view(),n=Math.max(5,S.cfg.perPage)*page;$("#count").textContent=r.length+" resultado(s)";
+ $("#list").innerHTML=r.length?r.slice(0,n).map(card).join(""):`<div class="empty">${S.cfg.feedUrl?"<b>Nenhum resultado</b> com os filtros atuais. Aguarde a próxima atualização ou afrouxe os filtros.":"<b>Nenhuma fonte de mascotes configurada.</b> O Roblox não publica quais mascotes existem em cada servidor, então o Finder precisa de uma fonte autorizada. Informe a URL em Ajustes (formato no README). Enquanto isso, o Server Hop já funciona."}</div>`;
+ r.forEach(i=>delete i.isNew);$("#more").hidden=r.length<=n;drawRar()}
+function drawRar(){const rs=[...new Set([...items.values()].map(i=>i.rarity).filter(Boolean))].sort((a,b)=>rank(b)-rank(a)),k=rs.join();if(k===rarKey)return;rarKey=k;
+ $("#fRar").innerHTML=rs.map(x=>`<button class="chip ${rarSel.has(x)?"on":""}" data-rar="${esc(x)}">${esc(x)}</button>`).join("")}
+function drawFav(){$("#favList").innerHTML=S.fav.length?S.fav.map(card).join(""):`<div class="empty"><b>Sem favoritos.</b> Toque na estrela de um resultado para salvá-lo aqui.</div>`}
+function drawHist(){const L={find:"Encontrado",join:"Entrada",hop:"Hop"};$("#histList").innerHTML=S.hist.length?S.hist.slice(0,100).map(h=>`<div class="card" style="grid-template-columns:1fr auto"><div><div class="nm">${L[h.type]}: ${esc(h.name||"servidor")}</div><div class="meta">${new Date(h.t).toLocaleString()} — ${esc(h.jobId.slice(0,8))}</div></div><button class="btn alt" data-joinid="${esc(h.jobId)}">JOIN</button></div>`).join(""):`<div class="empty"><b>Histórico vazio.</b></div>`}
+
+async function hopOnce(){const mn=+S.cfg.hopMin||1,mx=+S.cfg.hopMax||99,h=$("#hInfo");h.textContent="Buscando servidores públicos…";
+ try{const l=(await servers(3)).filter(s=>s.playing>=mn&&s.playing<=mx&&s.playing<s.maxPlayers&&!S.visited.includes(s.id));
+  h.textContent=`${l.length} servidor(es) válido(s) com ${mn} a ${mx} jogador(es), ainda não visitados.`;
+  if(!l.length)return;const s=l[Math.random()*l.length|0];S.visited.push(s.id);if(S.visited.length>500)S.visited.shift();
+  S.hist.unshift({t:Date.now(),type:"hop",name:`${s.playing}/${s.maxPlayers} jogadores`,jobId:s.id});S.hist.length=Math.min(S.hist.length,300);store.save();launch(s.id)
+ }catch(e){h.textContent="Erro: "+e.message}}
+function hopAuto(){const b=$("#hAuto");if(hopT){clearInterval(hopT);hopT=null;b.textContent="Iniciar troca automática";return}
+ b.textContent="Interromper troca automática";hopOnce();hopT=setInterval(hopOnce,Math.max(8,S.cfg.hopEvery)*1000)}
+
+function drawSets(){$("#setForm").innerHTML="<h2>Ajustes</h2>"+FIELDS.map(([k,l,t])=>t==="checkbox"?`<label class="row">${l}<input type="checkbox" data-k="${k}" ${S.cfg[k]?"checked":""}></label>`:`<label>${l}<input data-k="${k}" type="${t}" value="${esc(S.cfg[k])}"></label>`).join("")+`<button class="btn" id="sSave">Salvar</button><button class="btn alt" id="sReset">Restaurar padrão</button>`}
+async function saveSets(){const c={...S.cfg};for(const[k,,t]of FIELDS){const e=$(`[data-k="${k}"]`);c[k]=t==="checkbox"?e.checked:t==="number"?Number(e.value):e.value.trim()}
+ if(c.feedUrl){let u;try{u=new URL(c.feedUrl)}catch{return toast("URL inválida.")}if(u.protocol!=="https:")return toast("Use uma URL https.");
+  if(u.origin!=="https://games.roblox.com"&&!(await chrome.permissions.request({origins:[u.origin+"/*"]})))return toast("Permissão de acesso à fonte negada.")}
+ S.cfg=c;await store.save();toast("Salvo.");rarKey="";renderList()}
+
+function show(v){$$(".view").forEach(e=>e.classList.toggle("on",e.id===v));$$("#nav button").forEach(b=>b.classList.toggle("on",b.dataset.v===v));if(v==="favs")drawFav();if(v==="hist")drawHist();if(v==="sets")drawSets()}
+const find=k=>items.get(k)||S.fav.find(f=>f.key===k);
+document.addEventListener("click",async e=>{const t=e.target.closest("button");if(!t)return;const d=t.dataset;
+ if(d.v)return show(d.v);
+ if(d.sort){if(F.sort===d.sort)F.dir*=-1;else{F.sort=d.sort;F.dir=-1}$$("[data-sort]").forEach(b=>{b.classList.toggle("on",b===t);b.textContent=b.textContent.replace(/ [▲▼]$/,"")+(b===t?(F.dir<0?" ▼":" ▲"):"")});page=1;return renderList()}
+ if(d.rar){rarSel.has(d.rar)?rarSel.delete(d.rar):rarSel.add(d.rar);t.classList.toggle("on");page=1;return renderList()}
+ if(d.join){const i=find(d.join);return i&&join(i.jobId,i.name)}
+ if(d.joinid)return join(d.joinid,"");
+ if(d.fav){const i=find(d.fav);if(!i)return;const x=S.fav.findIndex(f=>f.key===i.key);x<0?S.fav.push({...i,isNew:false}):S.fav.splice(x,1);store.save();renderList();if($("#favs").classList.contains("on"))drawFav();return}
+ switch(t.id){case"fToggle":$("#fPanel").hidden=!$("#fPanel").hidden;break;case"more":page++;renderList();break;
+  case"bStart":start();break;case"bPause":pause();break;case"bReset":pause();items.clear();page=1;rarKey="";renderList();start();break;
+  case"hOnce":hopOnce();break;case"hAuto":hopAuto();break;case"hClear":S.hist=[];S.visited=[];store.save();drawHist();toast("Histórico e servidores visitados limpos.");break;
+  case"sSave":saveSets();break;case"sReset":S.cfg={...DEF};await store.save();drawSets();toast("Padrões restaurados.")}});
+$$("#fPanel input").forEach(i=>i.addEventListener("input",()=>{page=1;renderList()}));
+setInterval(()=>$$("[data-t]").forEach(e=>e.textContent=age(+e.dataset.t)),1000);
+(async()=>{await store.load();renderList();if(S.cfg.feedUrl&&S.cfg.auto)start();else setLive("parado")})();
+
+
+==================================================
+ARQUIVO: README.md
+==================================================
+# Egg Finder Pro (Roube um Ovo, Place ID 107778070777162)
+
+## Instalação no Quetta (Android)
+1. Compacte esta pasta em `egg-finder.zip` (já incluso) e descompacte no aparelho.
+2. Abra `quetta://extensions`, ative o Modo do desenvolvedor.
+3. Toque em "Carregar sem compactação" e escolha a pasta `egg-finder` (a que contém manifest.json).
+4. Toque no ícone da extensão: o app abre em uma aba. Requer o app Roblox instalado para o JOIN.
+Se a sua versão do Quetta não carregar extensões descompactadas, o mesmo código roda no Chrome/Edge do PC.
+
+## O que funciona sem nenhuma fonte externa
+Server Hop, histórico, favoritos, ajustes, verificação e entrada em servidores reais (API pública games.roblox.com).
+
+## Finder: formato da fonte (JSON via https)
+O Roblox não expõe publicamente mascotes por servidor. Use uma fonte autorizada (API oficial do desenvolvedor do jogo ou um serviço de terceiros com permissão) que retorne uma lista:
+[{"jobId":"<uuid do servidor>","name":"Celestial Sunlion","gen":69500000000,"size":4.15,"rarity":"Legendary","mutation":"GLD","foundAt":1760000000,"image":"https://..."}]
+Itens sem jobId UUID válido, nome ou gen numérico são descartados. Sem foundAt, usa-se o momento em que o item chegou.
+
+

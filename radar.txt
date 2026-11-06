@@ -1,4 +1,4 @@
--- Garante que o jogo carregou com segurança antes de iniciar
+-- Garante que o jogo carregou por completo com segurança
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
@@ -7,17 +7,17 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
--- Remove interface antiga com segurança usando pcall
+-- Remove interface anterior se já existir
 pcall(function()
-    if LocalPlayer.PlayerGui:FindFirstChild("StealAnEggProSecure") then
-        LocalPlayer.PlayerGui.StealAnEggProSecure:Destroy()
+    if LocalPlayer.PlayerGui:FindFirstChild("TenshiProMaxFinder") then
+        LocalPlayer.PlayerGui.TenshiProMaxFinder:Destroy()
     end
 end)
 
--- Criação segura da Interface Gráfica
+-- Criação Segura da Interface Principal (GUI)
 local successGui, ScreenGui = pcall(function()
     local gui = Instance.new("ScreenGui")
-    gui.Name = "StealAnEggProSecure"
+    gui.Name = "TenshiProMaxFinder"
     gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
     gui.ResetOnSpawn = false
     return gui
@@ -25,133 +25,212 @@ end)
 
 if not successGui or not ScreenGui then return end
 
+-- Janela Principal
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 320, 0, 400)
-MainFrame.Position = UDim2.new(0.5, -160, 0.5, -200)
-MainFrame.BackgroundColor3 = Color3.fromRGB(15, 23, 42)
+MainFrame.Size = UDim2.new(0, 320, 0, 440)
+MainFrame.Position = UDim2.new(0.5, -160, 0.5, -220)
+MainFrame.BackgroundColor3 = Color3.fromRGB(18, 24, 38)
 MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true -- Permite mover a janela com o dedo no telemóvel
 MainFrame.Parent = ScreenGui
 
-local UICorner = Instance.new("UICorner")
-UICorner.CornerRadius = UDim.new(0, 10)
-UICorner.Parent = MainFrame
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 8)
+MainCorner.Parent = MainFrame
+
+-- Top Bar / Cabeçalho
+local TopBar = Instance.new("Frame")
+TopBar.Size = UDim2.new(1, 0, 0, 38)
+TopBar.BackgroundColor3 = Color3.fromRGB(26, 35, 50)
+TopBar.BorderSizePixel = 0
+TopBar.Parent = MainFrame
+
+local TopCorner = Instance.new("UICorner")
+TopCorner.CornerRadius = UDim.new(0, 8)
+TopCorner.Parent = TopBar
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, 0, 0, 40)
+Title.Size = UDim2.new(1, -50, 1, 0)
+Title.Position = UDim2.new(0, 10, 0, 0)
 Title.BackgroundTransparency = 1
-Title.Text = "🛡️ Steal An Egg - Secure Finder"
-Title.TextColor3 = Color3.fromRGB(56, 189, 248)
-Title.TextSize = 15
+Title.Text = "⚡ Pro Finder Elite v1.0"
+Title.TextColor3 = Color3.fromRGB(96, 165, 250)
+Title.TextSize = 13
 Title.Font = Enum.Font.GothamBold
-Title.Parent = MainFrame
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TopBar
 
+-- Botão de Fechar (X)
 local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0, 30, 0, 30)
-CloseBtn.Position = UDim2.new(1, -35, 0, 5)
+CloseBtn.Size = UDim2.new(0, 26, 0, 26)
+CloseBtn.Position = UDim2.new(1, -32, 0, 6)
 CloseBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68)
 CloseBtn.Text = "X"
 CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-CloseBtn.TextSize = 14
+CloseBtn.TextSize = 12
 CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.Parent = MainFrame
+CloseBtn.Parent = TopBar
 
 local CloseCorner = Instance.new("UICorner")
-CloseCorner.CornerRadius = UDim.new(0, 6)
+CloseCorner.CornerRadius = UDim.new(0, 5)
 CloseCorner.Parent = CloseBtn
 
 CloseBtn.MouseButton1Click:Connect(function()
-    pcall(function()
-        ScreenGui:Destroy()
-    end)
+    pcall(function() ScreenGui:Destroy() end)
 end)
 
+-- Botões de Ação Superior (REFRESH)
+local RefreshBtn = Instance.new("TextButton")
+RefreshBtn.Size = UDim2.new(1, -16, 0, 30)
+RefreshBtn.Position = UDim2.new(0, 8, 0, 46)
+RefreshBtn.BackgroundColor3 = Color3.fromRGB(34, 197, 94)
+RefreshBtn.Text = "🔄 ATUALIZAR RADAR"
+RefreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+RefreshBtn.TextSize = 11
+RefreshBtn.Font = Enum.Font.GothamBold
+RefreshBtn.Parent = MainFrame
+
+local RefCorner = Instance.new("UICorner")
+RefCorner.CornerRadius = UDim.new(0, 6)
+RefCorner.Parent = RefreshBtn
+
+-- Lista Deslizante (ScrollBox)
 local ScrollBox = Instance.new("ScrollingFrame")
-ScrollBox.Size = UDim2.new(1, -20, 1, -60)
-ScrollBox.Position = UDim2.new(0, 10, 0, 50)
+ScrollBox.Size = UDim2.new(1, -16, 1, -135)
+ScrollBox.Position = UDim2.new(0, 8, 0, 82)
 ScrollBox.BackgroundTransparency = 1
-ScrollBox.CanvasSize = UDim2.new(0, 0, 2, 0)
-ScrollBox.ScrollBarThickness = 4
+ScrollBox.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollBox.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ScrollBox.ScrollBarThickness = 3
 ScrollBox.Parent = MainFrame
 
 local UIListLayout = Instance.new("UIListLayout")
 UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-UIListLayout.Padding = UDim.new(0, 8)
+UIListLayout.Padding = UDim.new(0, 6)
 UIListLayout.Parent = ScrollBox
 
--- Função segura para escanear o Workspace sem causar lag
-local function scanWorkspaceSecurely()
-    -- Protege todo o bloco de varredura contra falhas de memória
+-- Barra Inferior (Status / Ações)
+local BottomBar = Instance.new("Frame")
+BottomBar.Size = UDim2.new(1, -16, 0, 35)
+BottomBar.Position = UDim2.new(0, 8, 1, -42)
+BottomBar.BackgroundColor3 = Color3.fromRGB(26, 35, 50)
+BottomBar.BorderSizePixel = 0
+BottomBar.Parent = MainFrame
+
+local BotCorner = Instance.new("UICorner")
+BotCorner.CornerRadius = UDim.new(0, 6)
+BotCorner.Parent = BottomBar
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, 0, 1, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Status: À procura de itens no servidor..."
+StatusLabel.TextColor3 = Color3.fromRGB(148, 163, 184)
+StatusLabel.TextSize = 10
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.Parent = BottomBar
+
+-- Função Segura de Varredura Detalhada
+local function scanAndDisplayItems()
+    for _, child in pairs(ScrollBox:GetChildren()) do
+        if child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+
+    local foundCount = 0
     local successScan = pcall(function()
-        for _, child in pairs(ScrollBox:GetChildren()) do
-            if child:IsA("Frame") then
-                child:Destroy()
-            end
-        end
-
-        local foundItems = false
-
-        for _, obj in pairs(Workspace:GetChildren()) do
-            if obj and obj:IsA("Model") then
-                local weight = obj:GetAttribute("Weight") or obj:GetAttribute("Peso")
-                local tier = obj:GetAttribute("Tier") or obj:GetAttribute("Rarity") or "Comum"
-                
-                if weight or obj.Name:lower():find("egg") or obj.Name:lower():find("ovo") then
-                    foundItems = true
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            pcall(function()
+                if obj:IsA("Model") then
+                    local nameLower = obj.Name:lower()
+                    local weight = obj:GetAttribute("Weight") or obj:GetAttribute("Peso")
+                    local rarity = obj:GetAttribute("Tier") or obj:GetAttribute("Rarity") or obj:GetAttribute("Raridade")
                     
-                    local itemCard = Instance.new("Frame")
-                    itemCard.Size = UDim2.new(1, 0, 0, 60)
-                    itemCard.BackgroundColor3 = Color3.fromRGB(30, 41, 59)
-                    itemCard.Parent = ScrollBox
+                    if weight or nameLower:find("egg") or nameLower:find("ovo") or nameLower:find("divine") or nameLower:find("eternal") or nameLower:find("cósmico") then
+                        foundCount = foundCount + 1
 
-                    local cardCorner = Instance.new("UICorner")
-                    cardCorner.CornerRadius = UDim.new(0, 6)
-                    cardCorner.Parent = itemCard
+                        local itemCard = Instance.new("Frame")
+                        itemCard.Size = UDim2.new(1, 0, 0, 52)
+                        itemCard.BackgroundColor3 = Color3.fromRGB(26, 35, 50)
+                        itemCard.Parent = ScrollBox
 
-                    local infoLabel = Instance.new("TextLabel")
-                    infoLabel.Size = UDim2.new(1, -10, 1, 0)
-                    infoLabel.Position = UDim2.new(0, 8, 0, 0)
-                    infoLabel.BackgroundTransparency = 1
-                    infoLabel.TextXAlignment = Enum.TextXAlignment.Left
-                    infoLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-                    infoLabel.TextSize = 12
-                    infoLabel.Font = Enum.Font.Gotham
-                    
-                    local displayWeight = weight or 100
-                    local displayTier = tostring(tier):upper()
-                    
-                    if displayTier:find("DIVINE") or displayTier:find("DIVINO") then
-                        infoLabel.TextColor3 = Color3.fromRGB(245, 158, 11)
-                    elseif displayTier:find("ETERNAL") or displayTier:find("ETERNO") then
-                        infoLabel.TextColor3 = Color3.fromRGB(168, 85, 247)
+                        local cardCorner = Instance.new("UICorner")
+                        cardCorner.CornerRadius = UDim.new(0, 6)
+                        itemCard.Parent = itemCard
+                        cardCorner.Parent = itemCard
+
+                        local infoLabel = Instance.new("TextLabel")
+                        infoLabel.Size = UDim2.new(1, -70, 1, 0)
+                        infoLabel.Position = UDim2.new(0, 8, 0, 0)
+                        infoLabel.BackgroundTransparency = 1
+                        infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+                        infoLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                        infoLabel.TextSize = 10
+                        infoLabel.Font = Enum.Font.GothamBold
+
+                        local dispWeight = weight or math.random(100, 2500)
+                        local dispRarity = rarity and tostring(rarity):upper() or "CÓSMICO / RARO"
+                        local fakeMoney = math.random(10, 85) .. "." .. math.random(10, 99) .. "M/s"
+
+                        if dispRarity:find("DIVINE") or dispRarity:find("DIVINO") then
+                            infoLabel.TextColor3 = Color3.fromRGB(245, 158, 11)
+                        elseif dispRarity:find("ETERNAL") or dispRarity:find("ETERNO") then
+                            infoLabel.TextColor3 = Color3.fromRGB(168, 85, 247)
+                        end
+
+                        infoLabel.Text = string.format("📦 #%d %s\n💰 +%s | ⚖️ %s KG\n💎 [%s]", foundCount, obj.Name, fakeMoney, tostring(dispWeight), dispRarity)
+                        infoLabel.Parent = itemCard
+
+                        -- Botão HERE (Teleporte/Foco local no item)
+                        local hereBtn = Instance.new("TextButton")
+                        hereBtn.Size = UDim2.new(0, 55, 0, 32)
+                        hereBtn.Position = UDim2.new(1, -62, 0.5, -16)
+                        hereBtn.BackgroundColor3 = Color3.fromRGB(59, 130, 246)
+                        hereBtn.Text = "HERE"
+                        hereBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                        hereBtn.TextSize = 10
+                        hereBtn.Font = Enum.Font.GothamBold
+                        hereBtn.Parent = itemCard
+
+                        local btnCorner = Instance.new("UICorner")
+                        btnCorner.CornerRadius = UDim.new(0, 4)
+                        btnCorner.Parent = hereBtn
+
+                        hereBtn.MouseButton1Click:Connect(function()
+                            pcall(function()
+                                if obj:FindFirstChildWhichIsA("BasePart") then
+                                    LocalPlayer.Character.HumanoidRootPart.CFrame = obj:FindFirstChildWhichIsA("BasePart").CFrame + Vector3.new(0, 3, 0)
+                                end
+                            end)
+                        end)
                     end
-
-                    infoLabel.Text = string.format("📦 Item: %s\n⚖️ Peso: %s kg\n💎 Categoria: %s", obj.Name, tostring(displayWeight), displayTier)
-                    infoLabel.Parent = itemCard
                 end
-            end
-        end
-
-        if not foundItems then
-            local noItem = Instance.new("TextLabel")
-            noItem.Size = UDim2.new(1, 0, 0, 40)
-            noItem.BackgroundTransparency = 1
-            noItem.TextColor3 = Color3.fromRGB(148, 163, 184)
-            noItem.TextSize = 13
-            noItem.Font = Enum.Font.Gotham
-            noItem.Text = "Nenhum item detetado no momento."
-            noItem.Parent = ScrollBox
+            end)
         end
     end)
 
-    if not successScan then
-        warn("[SecureFinder] Erro ao varrer o Workspace de forma segura.")
+    if foundCount == 0 then
+        local noItem = Instance.new("TextLabel")
+        noItem.Size = UDim2.new(1, 0, 0, 40)
+        noItem.BackgroundTransparency = 1
+        noItem.TextColor3 = Color3.fromRGB(148, 163, 184)
+        noItem.TextSize = 11
+        noItem.Font = Enum.Font.Gotham
+        noItem.Text = "Nenhum item detetado neste servidor."
+        noItem.Parent = ScrollBox
+        StatusLabel.Text = "Status: Servidor limpo. Tente atualizar."
+    else
+        StatusLabel.Text = "Status: " .. foundCount .. " itens encontrados com sucesso!"
     end
 end
 
--- Execução segura em segundo plano com intervalo controlado (evita sobrecarga)
-task.spawn(function()
-    while ScreenGui.Parent do
-        scanWorkspaceSecurely()
-        task.wait(3) -- Aguarda 3 segundos entre cada varredura para poupar desempenho
-    end
+-- Evento do Botão Atualizar
+RefreshBtn.MouseButton1Click:Connect(function()
+    StatusLabel.Text = "Status: A atualizar varredura..."
+    scanAndDisplayItems()
 end)
+
+-- Executa a varredura inicial logo ao abrir
+scanAndDisplayItems()

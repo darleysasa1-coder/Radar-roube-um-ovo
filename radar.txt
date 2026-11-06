@@ -1,0 +1,157 @@
+-- Garante que o jogo carregou com segurança antes de iniciar
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+-- Remove interface antiga com segurança usando pcall
+pcall(function()
+    if LocalPlayer.PlayerGui:FindFirstChild("StealAnEggProSecure") then
+        LocalPlayer.PlayerGui.StealAnEggProSecure:Destroy()
+    end
+end)
+
+-- Criação segura da Interface Gráfica
+local successGui, ScreenGui = pcall(function()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "StealAnEggProSecure"
+    gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    gui.ResetOnSpawn = false
+    return gui
+end)
+
+if not successGui or not ScreenGui then return end
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 320, 0, 400)
+MainFrame.Position = UDim2.new(0.5, -160, 0.5, -200)
+MainFrame.BackgroundColor3 = Color3.fromRGB(15, 23, 42)
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 10)
+UICorner.Parent = MainFrame
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 40)
+Title.BackgroundTransparency = 1
+Title.Text = "🛡️ Steal An Egg - Secure Finder"
+Title.TextColor3 = Color3.fromRGB(56, 189, 248)
+Title.TextSize = 15
+Title.Font = Enum.Font.GothamBold
+Title.Parent = MainFrame
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+CloseBtn.Position = UDim2.new(1, -35, 0, 5)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68)
+CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseBtn.TextSize = 14
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.Parent = MainFrame
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 6)
+CloseCorner.Parent = CloseBtn
+
+CloseBtn.MouseButton1Click:Connect(function()
+    pcall(function()
+        ScreenGui:Destroy()
+    end)
+end)
+
+local ScrollBox = Instance.new("ScrollingFrame")
+ScrollBox.Size = UDim2.new(1, -20, 1, -60)
+ScrollBox.Position = UDim2.new(0, 10, 0, 50)
+ScrollBox.BackgroundTransparency = 1
+ScrollBox.CanvasSize = UDim2.new(0, 0, 2, 0)
+ScrollBox.ScrollBarThickness = 4
+ScrollBox.Parent = MainFrame
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 8)
+UIListLayout.Parent = ScrollBox
+
+-- Função segura para escanear o Workspace sem causar lag
+local function scanWorkspaceSecurely()
+    -- Protege todo o bloco de varredura contra falhas de memória
+    local successScan = pcall(function()
+        for _, child in pairs(ScrollBox:GetChildren()) do
+            if child:IsA("Frame") then
+                child:Destroy()
+            end
+        end
+
+        local foundItems = false
+
+        for _, obj in pairs(Workspace:GetChildren()) do
+            if obj and obj:IsA("Model") then
+                local weight = obj:GetAttribute("Weight") or obj:GetAttribute("Peso")
+                local tier = obj:GetAttribute("Tier") or obj:GetAttribute("Rarity") or "Comum"
+                
+                if weight or obj.Name:lower():find("egg") or obj.Name:lower():find("ovo") then
+                    foundItems = true
+                    
+                    local itemCard = Instance.new("Frame")
+                    itemCard.Size = UDim2.new(1, 0, 0, 60)
+                    itemCard.BackgroundColor3 = Color3.fromRGB(30, 41, 59)
+                    itemCard.Parent = ScrollBox
+
+                    local cardCorner = Instance.new("UICorner")
+                    cardCorner.CornerRadius = UDim.new(0, 6)
+                    cardCorner.Parent = itemCard
+
+                    local infoLabel = Instance.new("TextLabel")
+                    infoLabel.Size = UDim2.new(1, -10, 1, 0)
+                    infoLabel.Position = UDim2.new(0, 8, 0, 0)
+                    infoLabel.BackgroundTransparency = 1
+                    infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+                    infoLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    infoLabel.TextSize = 12
+                    infoLabel.Font = Enum.Font.Gotham
+                    
+                    local displayWeight = weight or 100
+                    local displayTier = tostring(tier):upper()
+                    
+                    if displayTier:find("DIVINE") or displayTier:find("DIVINO") then
+                        infoLabel.TextColor3 = Color3.fromRGB(245, 158, 11)
+                    elseif displayTier:find("ETERNAL") or displayTier:find("ETERNO") then
+                        infoLabel.TextColor3 = Color3.fromRGB(168, 85, 247)
+                    end
+
+                    infoLabel.Text = string.format("📦 Item: %s\n⚖️ Peso: %s kg\n💎 Categoria: %s", obj.Name, tostring(displayWeight), displayTier)
+                    infoLabel.Parent = itemCard
+                end
+            end
+        end
+
+        if not foundItems then
+            local noItem = Instance.new("TextLabel")
+            noItem.Size = UDim2.new(1, 0, 0, 40)
+            noItem.BackgroundTransparency = 1
+            noItem.TextColor3 = Color3.fromRGB(148, 163, 184)
+            noItem.TextSize = 13
+            noItem.Font = Enum.Font.Gotham
+            noItem.Text = "Nenhum item detetado no momento."
+            noItem.Parent = ScrollBox
+        end
+    end)
+
+    if not successScan then
+        warn("[SecureFinder] Erro ao varrer o Workspace de forma segura.")
+    end
+end
+
+-- Execução segura em segundo plano com intervalo controlado (evita sobrecarga)
+task.spawn(function()
+    while ScreenGui.Parent do
+        scanWorkspaceSecurely()
+        task.wait(3) -- Aguarda 3 segundos entre cada varredura para poupar desempenho
+    end
+end)

@@ -1,0 +1,909 @@
+--[[
+    Pro Finder Elite v2.0
+    - Leitura de atributos reais (Value / Price / Weight ou NumberValue / IntValue)
+    - Scanner multi-server com server hop automatico
+
+    CONFIGURE ANTES DE USAR (secao CONFIG):
+      * RELOAD_URL  -> URL (raw) onde este script esta hospedado, OU
+      * RELOAD_FILE -> nome do arquivo na pasta "workspace" do executor
+      Sem um dos dois, o script nao se reexecuta apos o teleporte
+      (a menos que voce o coloque na pasta "autoexec" do executor).
+
+    REQUISITOS DO EXECUTOR: request/http_request, queue_on_teleport
+    (writefile/readfile sao opcionais; sem eles o estado viaja via TeleportData).
+]]
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+----------------------------------------------------------------------
+-- CONFIG
+----------------------------------------------------------------------
+local CONFIG = {
+    RANK_BY          = "Weight",   -- criterio do "maior ovo": "Weight" ou "Value"
+    MAX_SERVERS      = 100,        -- servidores a escanear por sessao
+    MIN_FREE_SLOTS   = 2,          -- vagas livres minimas para tentar entrar
+    SETTLE_DELAY     = 3,          -- segundos para o servidor popular o Workspace
+    HOP_DELAY        = 3,          -- pausa entre tentativas de teleporte
+    TELEPORT_TIMEOUT = 20,         -- segundos esperando o teleporte antes de pular
+    MAX_CARDS        = 40,         -- maximo de cards exibidos na lista
+
+    RELOAD_URL       = "",         -- ex: "https://raw.githubusercontent.com/user/repo/main/radar.lua"
+    RELOAD_FILE      = "TenshiRadar.lua",
+    STATE_FILE       = "TenshiRadarState.json",
+
+    -- Ajuste conforme o jogo: onde ele guarda valor e peso
+    NAME_PATTERNS    = { "egg", "ovo", "divine", "eternal", "cósmico", "cosmico" },
+    VALUE_NAMES      = { "Value", "Price", "BaseValue", "Valor" },
+    WEIGHT_NAMES     = { "Weight", "Peso" },
+    RARITY_NAMES     = { "Tier", "Rarity", "Raridade" },
+}
+
+----------------------------------------------------------------------
+-- SERVICOS / GLOBAIS
+----------------------------------------------------------------------
+local Players          = game:GetService("Players")
+local Workspace        = game:GetService("Workspace")
+local HttpService      = game:GetService("HttpService")
+local TeleportService  = game:GetService("TeleportService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer      = Players.LocalPlayer
+
+local env = (getgenv and getgenv()) or _G
+local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request or (fluxus and fluxus.request)
+
+-- Encerra instancia anterior (se existir)
+if env.TenshiRadarCleanup then
+    pcall(env.TenshiRadarCleanup)
+end
+pcall(function()
+    local old = LocalPlayer.PlayerGui:FindFirstChild("TenshiProMaxFinder")
+    if old then old:Destroy() end
+end)
+
+local alive = true
+local connections = {}
+local ScreenGui
+
+local function track(conn)
+    connections[#connections + 1] = conn
+    return conn
+end
+
+env.TenshiRadarCleanup = function()
+    alive = false
+    for _, c in ipairs(connections) do
+        pcall(function() c:Disconnect() end)
+    end
+    pcall(function()
+        if ScreenGui then ScreenGui:Destroy() end
+    end)
+end
+
+----------------------------------------------------------------------
+-- ESTADO PERSISTENTE (arquivo + TeleportData)
+----------------------------------------------------------------------
+local function newState()
+    return {
+        __tenshi = true,
+        active = false,
+        updated = 0,
+        rankBy = CONFIG.RANK_BY,
+        scanned = 0,
+        hops = 0,
+        visited = {},
+        queue = {},
+        best = nil,
+        history = {},
+    }
+end
+
+local function decodeState(str)
+    local ok, t = pcall(HttpService.JSONDecode, HttpService, str)
+    if ok and type(t) == "table" and t.__tenshi then
+        t.visited = type(t.visited) == "table" and t.visited or {}
+        t.queue = type(t.queue) == "table" and t.queue or {}
+        t.history = type(t.history) == "table" and t.history or {}
+        t.scanned = t.scanned or 0
+        t.hops = t.hops or 0
+        t.updated = t.updated or 0
+        return t
+    end
+    return nil
+end
+
+local function loadState()
+    local candidates = {}
+
+    local okT, td = pcall(function() return TeleportService:GetLocalPlayerTeleportData() end)
+    if okT and type(td) == "table" and td.__tenshi then
+        local s = decodeState(HttpService:JSONEncode(td))
+        if s then candidates[#candidates + 1] = s end
+    end
+
+    if readfile and isfile then
+        local okF, content = pcall(function()
+            if isfile(CONFIG.STATE_FILE) then return readfile(CONFIG.STATE_FILE) end
+        end)
+        if okF and content then
+            local s = decodeState(content)
+            if s then candidates[#candidates + 1] = s end
+        end
+    end
+
+    local picked
+    for _, s in ipairs(candidates) do
+        if not picked or s.updated > picked.updated then picked = s end
+    end
+    return picked or newState()
+end
+
+local state = loadState()
+local resuming = state.active and (os.time() - state.updated) < 180
+if state.active and not resuming then
+    state.active = false -- estado velho: nao retomar sozinho
+end
+
+local function saveState()
+    state.updated = os.time()
+    while #state.history > 30 do table.remove(state.history, 1) end
+    if writefile then
+        pcall(writefile, CONFIG.STATE_FILE, HttpService:JSONEncode(state))
+    end
+end
+
+local function markVisited(jobId)
+    if jobId and jobId ~= "" then state.visited[jobId] = true end
+end
+
+----------------------------------------------------------------------
+-- HELPERS DE UI
+----------------------------------------------------------------------
+local function new(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do o[k] = v end
+    if parent then o.Parent = parent end -- Parent por ultimo (menos reflow)
+    return o
+end
+
+local function corner(parent, r)
+    return new("UICorner", { CornerRadius = UDim.new(0, r) }, parent)
+end
+
+local C = {
+    bg     = Color3.fromRGB(18, 24, 38),
+    panel  = Color3.fromRGB(26, 35, 50),
+    text   = Color3.fromRGB(255, 255, 255),
+    muted  = Color3.fromRGB(148, 163, 184),
+    blue   = Color3.fromRGB(59, 130, 246),
+    green  = Color3.fromRGB(34, 197, 94),
+    red    = Color3.fromRGB(239, 68, 68),
+    purple = Color3.fromRGB(139, 92, 246),
+    gold   = Color3.fromRGB(245, 158, 11),
+    violet = Color3.fromRGB(168, 85, 247),
+}
+
+local okGui
+okGui, ScreenGui = pcall(function()
+    return new("ScreenGui", {
+        Name = "TenshiProMaxFinder",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    }, LocalPlayer:WaitForChild("PlayerGui"))
+end)
+if not okGui or not ScreenGui then return end
+
+local MainFrame = new("Frame", {
+    Size = UDim2.new(0, 330, 0, 500),
+    Position = UDim2.new(0.5, -165, 0.5, -250),
+    BackgroundColor3 = C.bg,
+    BorderSizePixel = 0,
+    Active = true,
+}, ScreenGui)
+corner(MainFrame, 8)
+
+-- Top bar (cantos de baixo retos via "filler")
+local TopBar = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 38),
+    BackgroundColor3 = C.panel,
+    BorderSizePixel = 0,
+}, MainFrame)
+corner(TopBar, 8)
+new("Frame", {
+    Size = UDim2.new(1, 0, 0, 10),
+    Position = UDim2.new(0, 0, 1, -10),
+    BackgroundColor3 = C.panel,
+    BorderSizePixel = 0,
+}, TopBar)
+
+new("TextLabel", {
+    Size = UDim2.new(1, -50, 1, 0),
+    Position = UDim2.new(0, 10, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "⚡ Pro Finder Elite v2.0",
+    TextColor3 = Color3.fromRGB(96, 165, 250),
+    TextSize = 13,
+    Font = Enum.Font.GothamBold,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, TopBar)
+
+local CloseBtn = new("TextButton", {
+    Size = UDim2.new(0, 26, 0, 26),
+    Position = UDim2.new(1, -32, 0, 6),
+    BackgroundColor3 = C.red,
+    Text = "X",
+    TextColor3 = C.text,
+    TextSize = 12,
+    Font = Enum.Font.GothamBold,
+}, TopBar)
+corner(CloseBtn, 5)
+
+local RefreshBtn = new("TextButton", {
+    Size = UDim2.new(1, -16, 0, 30),
+    Position = UDim2.new(0, 8, 0, 46),
+    BackgroundColor3 = C.green,
+    Text = "🔄 ATUALIZAR RADAR",
+    TextColor3 = C.text,
+    TextSize = 11,
+    Font = Enum.Font.GothamBold,
+}, MainFrame)
+corner(RefreshBtn, 6)
+
+local MultiBtn = new("TextButton", {
+    Size = UDim2.new(1, -16, 0, 30),
+    Position = UDim2.new(0, 8, 0, 82),
+    BackgroundColor3 = C.purple,
+    Text = "🔍 ESCANEAR MULTI-SERVER",
+    TextColor3 = C.text,
+    TextSize = 11,
+    Font = Enum.Font.GothamBold,
+}, MainFrame)
+corner(MultiBtn, 6)
+
+-- Barra do melhor ovo encontrado
+local BestBar = new("Frame", {
+    Size = UDim2.new(1, -16, 0, 44),
+    Position = UDim2.new(0, 8, 0, 118),
+    BackgroundColor3 = C.panel,
+    BorderSizePixel = 0,
+}, MainFrame)
+corner(BestBar, 6)
+
+local BestLabel = new("TextLabel", {
+    Size = UDim2.new(1, -58, 1, 0),
+    Position = UDim2.new(0, 8, 0, 0),
+    BackgroundTransparency = 1,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextWrapped = true,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    TextColor3 = C.gold,
+    TextSize = 9,
+    Font = Enum.Font.GothamBold,
+    Text = "🏆 Nenhum registro ainda",
+}, BestBar)
+
+local BestGoBtn = new("TextButton", {
+    Size = UDim2.new(0, 44, 0, 28),
+    Position = UDim2.new(1, -50, 0.5, -14),
+    BackgroundColor3 = C.blue,
+    Text = "IR",
+    TextColor3 = C.text,
+    TextSize = 10,
+    Font = Enum.Font.GothamBold,
+}, BestBar)
+corner(BestGoBtn, 4)
+
+local ScrollBox = new("ScrollingFrame", {
+    Size = UDim2.new(1, -16, 1, -220),
+    Position = UDim2.new(0, 8, 0, 168),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollBarThickness = 3,
+}, MainFrame)
+new("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 6),
+}, ScrollBox)
+
+local BottomBar = new("Frame", {
+    Size = UDim2.new(1, -16, 0, 36),
+    Position = UDim2.new(0, 8, 1, -44),
+    BackgroundColor3 = C.panel,
+    BorderSizePixel = 0,
+}, MainFrame)
+corner(BottomBar, 6)
+
+local StatusLabel = new("TextLabel", {
+    Size = UDim2.new(1, -10, 1, 0),
+    Position = UDim2.new(0, 5, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "Status: pronto.",
+    TextColor3 = C.muted,
+    TextSize = 10,
+    TextWrapped = true,
+    Font = Enum.Font.Gotham,
+}, BottomBar)
+
+local function setStatus(msg)
+    if alive and StatusLabel and StatusLabel.Parent then
+        StatusLabel.Text = "Status: " .. tostring(msg)
+    end
+end
+
+-- Arraste manual pela TopBar (substitui Draggable, obsoleto)
+do
+    local dragging, dragStart, startPos
+    track(TopBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+            local c; c = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    c:Disconnect()
+                end
+            end)
+        end
+    end))
+    track(UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            MainFrame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y
+            )
+        end
+    end))
+end
+
+----------------------------------------------------------------------
+-- FORMATACAO
+----------------------------------------------------------------------
+local function fmtNum(n)
+    if n == nil then return "N/D" end
+    local a = math.abs(n)
+    if a >= 1e9 then return string.format("%.2fB", n / 1e9) end
+    if a >= 1e6 then return string.format("%.2fM", n / 1e6) end
+    if a >= 1e3 then return string.format("%.2fK", n / 1e3) end
+    if n % 1 == 0 then return tostring(n) end
+    return string.format("%.2f", n)
+end
+
+----------------------------------------------------------------------
+-- LEITURA DE DADOS REAIS DO OVO
+----------------------------------------------------------------------
+local function toSet(list)
+    local s = {}
+    for _, n in ipairs(list) do s[n:lower()] = true end
+    return s
+end
+local VALUE_SET  = toSet(CONFIG.VALUE_NAMES)
+local WEIGHT_SET = toSet(CONFIG.WEIGHT_NAMES)
+
+local PATTERNS = {}
+for _, p in ipairs(CONFIG.NAME_PATTERNS) do PATTERNS[#PATTERNS + 1] = p:lower() end
+
+local function toNumber(v)
+    if type(v) == "number" then return v end
+    if type(v) == "string" then return tonumber((v:gsub("[^%d%.%-]", ""))) end
+    return nil
+end
+
+-- 1) atributos do modelo (e do PrimaryPart)  2) NumberValue/IntValue dentro do modelo
+local function readNumber(obj, names, nameSet)
+    for _, n in ipairs(names) do
+        local v = toNumber(obj:GetAttribute(n))
+        if v then return v end
+    end
+    local pp = obj.PrimaryPart
+    if pp then
+        for _, n in ipairs(names) do
+            local v = toNumber(pp:GetAttribute(n))
+            if v then return v end
+        end
+    end
+    for _, c in ipairs(obj:GetDescendants()) do
+        if (c:IsA("NumberValue") or c:IsA("IntValue")) and nameSet[c.Name:lower()] then
+            return c.Value
+        end
+    end
+    return nil
+end
+
+local function hasAnyAttribute(obj, names)
+    for _, n in ipairs(names) do
+        if obj:GetAttribute(n) ~= nil then return true end
+    end
+    return false
+end
+
+local function isCandidate(m)
+    local lname = (m.Name:lower():gsub("Ó", "ó"))
+    for _, p in ipairs(PATTERNS) do
+        if lname:find(p, 1, true) then
+            return not Players:GetPlayerFromCharacter(m)
+        end
+    end
+    if hasAnyAttribute(m, CONFIG.WEIGHT_NAMES) then
+        return not Players:GetPlayerFromCharacter(m)
+    end
+    return false
+end
+
+local function insideMatched(obj, matched)
+    local p = obj.Parent
+    while p and p ~= Workspace do
+        if matched[p] then return true end
+        p = p.Parent
+    end
+    return false
+end
+
+local function metricOf(weight, value)
+    local m
+    if CONFIG.RANK_BY == "Value" then m = value else m = weight end
+    return m or -1
+end
+
+local function buildInfo(m)
+    local weight = readNumber(m, CONFIG.WEIGHT_NAMES, WEIGHT_SET)
+    local value = readNumber(m, CONFIG.VALUE_NAMES, VALUE_SET)
+    local rarity
+    for _, n in ipairs(CONFIG.RARITY_NAMES) do
+        local r = m:GetAttribute(n)
+        if r ~= nil then rarity = tostring(r) break end
+    end
+    return {
+        model = m,
+        name = m.Name,
+        weight = weight,
+        value = value,
+        rarity = rarity,
+        metric = metricOf(weight, value),
+    }
+end
+
+local function scanEggs(fast)
+    local results, matched = {}, {}
+    local step = fast and 8000 or 2500
+    local descendants = Workspace:GetDescendants()
+
+    for i = 1, #descendants do
+        if not alive then return results end
+        local d = descendants[i]
+        if d.ClassName == "Model" and isCandidate(d) and not insideMatched(d, matched) then
+            matched[d] = true
+            local ok, info = pcall(buildInfo, d)
+            if ok and info then results[#results + 1] = info end
+        end
+        if i % step == 0 then task.wait() end -- evita congelar o jogo
+    end
+
+    table.sort(results, function(a, b) return a.metric > b.metric end)
+    return results
+end
+
+----------------------------------------------------------------------
+-- RENDER DA LISTA
+----------------------------------------------------------------------
+local function teleportToModel(model)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (hrp and hum) or hum.Health <= 0 then
+        setStatus("Personagem indisponível (respawn?).")
+        return
+    end
+    if not model or not model.Parent then
+        setStatus("Esse item não existe mais.")
+        return
+    end
+    local ok, pivot = pcall(function() return model:GetPivot() end)
+    if not ok then
+        setStatus("Não foi possível localizar o item.")
+        return
+    end
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { char, model }
+    local hit = Workspace:Raycast(pivot.Position + Vector3.new(0, 4, 0), Vector3.new(0, -300, 0), params)
+
+    local ground = hit and hit.Position or pivot.Position
+    local target = ground + Vector3.new(0, hum.HipHeight + hrp.Size.Y / 2 + 1, 0)
+
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+    char:PivotTo(CFrame.new(target) * (hrp.CFrame - hrp.CFrame.Position))
+    setStatus("Teleportado para " .. model.Name)
+end
+
+local function clearList()
+    for _, child in ipairs(ScrollBox:GetChildren()) do
+        if child:IsA("GuiObject") then child:Destroy() end
+    end
+end
+
+local function render(eggs)
+    clearList()
+
+    if #eggs == 0 then
+        new("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 40),
+            BackgroundTransparency = 1,
+            TextColor3 = C.muted,
+            TextSize = 11,
+            Font = Enum.Font.Gotham,
+            Text = "Nenhum item detectado neste servidor.",
+            LayoutOrder = 1,
+        }, ScrollBox)
+        return
+    end
+
+    for i = 1, math.min(#eggs, CONFIG.MAX_CARDS) do
+        local egg = eggs[i]
+        local card = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 56),
+            BackgroundColor3 = C.panel,
+            BorderSizePixel = 0,
+            LayoutOrder = i,
+        }, ScrollBox)
+        corner(card, 6)
+
+        local rarityText = egg.rarity and egg.rarity:upper() or "N/D"
+        local color = C.text
+        if rarityText:find("DIVINE", 1, true) or rarityText:find("DIVINO", 1, true) then
+            color = C.gold
+        elseif rarityText:find("ETERNAL", 1, true) or rarityText:find("ETERNO", 1, true) then
+            color = C.violet
+        end
+
+        new("TextLabel", {
+            Size = UDim2.new(1, -72, 1, 0),
+            Position = UDim2.new(0, 8, 0, 0),
+            BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextWrapped = true,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextColor3 = color,
+            TextSize = 10,
+            Font = Enum.Font.GothamBold,
+            Text = string.format("📦 #%d %s\n💰 %s | ⚖️ %s KG\n💎 [%s]",
+                i, egg.name, fmtNum(egg.value), fmtNum(egg.weight), rarityText),
+        }, card)
+
+        local hereBtn = new("TextButton", {
+            Size = UDim2.new(0, 55, 0, 32),
+            Position = UDim2.new(1, -62, 0.5, -16),
+            BackgroundColor3 = C.blue,
+            Text = "HERE",
+            TextColor3 = C.text,
+            TextSize = 10,
+            Font = Enum.Font.GothamBold,
+        }, card)
+        corner(hereBtn, 4)
+        hereBtn.MouseButton1Click:Connect(function()
+            teleportToModel(egg.model)
+        end)
+
+        if i % 10 == 0 then task.wait() end
+    end
+end
+
+----------------------------------------------------------------------
+-- BEST / BOTOES DE ESTADO
+----------------------------------------------------------------------
+local function updateBest()
+    if not BestLabel.Parent then return end
+    local b = state.best
+    if b then
+        BestLabel.Text = string.format("🏆 %s | ⚖️ %s KG | 💰 %s\n🆔 %s",
+            tostring(b.name), fmtNum(b.weight), fmtNum(b.value), tostring(b.jobId))
+    else
+        BestLabel.Text = "🏆 Nenhum registro ainda"
+    end
+end
+
+local function updateMultiBtn()
+    if not MultiBtn.Parent then return end
+    if state.active then
+        MultiBtn.Text = string.format("⛔ PARAR SCAN (%d/%d)", state.scanned, CONFIG.MAX_SERVERS)
+        MultiBtn.BackgroundColor3 = C.red
+    else
+        MultiBtn.Text = "🔍 ESCANEAR MULTI-SERVER"
+        MultiBtn.BackgroundColor3 = C.purple
+    end
+end
+
+----------------------------------------------------------------------
+-- LISTA DE SERVIDORES (API PUBLICA)
+----------------------------------------------------------------------
+local function httpGetJson(url)
+    if not httpRequest then return nil, "executor sem request/http_request" end
+    for attempt = 1, 4 do
+        local ok, res = pcall(httpRequest, { Url = url, Method = "GET" })
+        if ok and res then
+            local code = res.StatusCode
+            if code == 200 then
+                local okJ, data = pcall(HttpService.JSONDecode, HttpService, res.Body)
+                if okJ then return data end
+                return nil, "JSON inválido"
+            elseif code == 429 then
+                setStatus("Rate limit da API, aguardando...")
+                task.wait(4 * attempt)
+            else
+                return nil, "HTTP " .. tostring(code)
+            end
+        else
+            task.wait(2)
+        end
+    end
+    return nil, "falha após várias tentativas"
+end
+
+local function fetchServers()
+    setStatus("Buscando lista de servidores...")
+    local needed = (CONFIG.MAX_SERVERS - state.scanned) + 20
+    local seen, fresh = {}, {}
+    local cursor
+
+    for _ = 1, 6 do
+        if not alive then break end
+        local url = string.format(
+            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&excludeFullGames=true&limit=100",
+            game.PlaceId
+        )
+        if cursor then url = url .. "&cursor=" .. HttpService:UrlEncode(cursor) end
+
+        local data, err = httpGetJson(url)
+        if not data then
+            setStatus("Erro na API: " .. tostring(err))
+            break
+        end
+
+        for _, s in ipairs(data.data or {}) do
+            if s.id and not seen[s.id] and s.id ~= game.JobId and not state.visited[s.id]
+                and (s.maxPlayers or 0) - (s.playing or 0) >= CONFIG.MIN_FREE_SLOTS then
+                seen[s.id] = true
+                fresh[#fresh + 1] = s.id
+            end
+        end
+
+        cursor = data.nextPageCursor
+        if not cursor or #fresh >= needed then break end
+        task.wait(1)
+    end
+
+    for i = #fresh, 2, -1 do -- embaralha para espalhar a carga
+        local j = math.random(i)
+        fresh[i], fresh[j] = fresh[j], fresh[i]
+    end
+    for _, id in ipairs(fresh) do state.queue[#state.queue + 1] = id end
+end
+
+----------------------------------------------------------------------
+-- SERVER HOP
+----------------------------------------------------------------------
+local teleportFailed, lastFail = false, ""
+track(TeleportService.TeleportInitFailed:Connect(function(player, result, msg)
+    if player == LocalPlayer then
+        teleportFailed = true
+        lastFail = tostring(result) .. (msg and (": " .. tostring(msg)) or "")
+    end
+end))
+
+local queuedOnce = false
+local function ensureQueueOnTeleport()
+    if queuedOnce then return end
+    local q = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+    if not q then
+        warn("[RADAR] queue_on_teleport indisponível; use a pasta autoexec do executor.")
+        return
+    end
+    local code
+    if CONFIG.RELOAD_URL ~= "" then
+        code = string.format("loadstring(game:HttpGet(%q))()", CONFIG.RELOAD_URL)
+    elseif isfile and isfile(CONFIG.RELOAD_FILE) then
+        code = string.format("loadstring(readfile(%q))()", CONFIG.RELOAD_FILE)
+    else
+        warn("[RADAR] Defina RELOAD_URL ou RELOAD_FILE (ou use autoexec) para reexecutar após o teleporte.")
+        return
+    end
+    if pcall(q, code) then queuedOnce = true end
+end
+
+local function printRecord(tag, record)
+    local ok, json = pcall(HttpService.JSONEncode, HttpService, record)
+    print("[TENSHI_RADAR] " .. tag .. " " .. (ok and json or "erro de serialização"))
+end
+
+local function finishMulti(reason)
+    state.active = false
+    saveState()
+    updateMultiBtn()
+    updateBest()
+    setStatus(string.format("Scan encerrado (%s). %d servidores escaneados.", reason, state.scanned))
+    if state.best then printRecord("BEST", state.best) end
+end
+
+local function hopNext()
+    while alive and state.active do
+        if state.scanned >= CONFIG.MAX_SERVERS then
+            finishMulti("limite atingido")
+            return
+        end
+        if #state.queue == 0 then fetchServers() end
+        if #state.queue == 0 then
+            finishMulti("sem mais servidores")
+            return
+        end
+
+        local jobId = table.remove(state.queue)
+        markVisited(jobId)
+        state.hops = state.hops + 1
+        saveState()
+        ensureQueueOnTeleport()
+
+        teleportFailed = false
+        setStatus(string.format("Entrando no servidor %s... (%d/%d)",
+            jobId:sub(1, 8), state.scanned, CONFIG.MAX_SERVERS))
+
+        local ok, err = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer, nil, state)
+        end)
+
+        if ok then
+            local t0 = os.clock()
+            while alive and state.active and not teleportFailed
+                and os.clock() - t0 < CONFIG.TELEPORT_TIMEOUT do
+                task.wait(0.25)
+            end
+        else
+            lastFail = tostring(err)
+        end
+
+        if not alive or not state.active then return end
+        setStatus("Falha ao entrar (" .. lastFail .. "). Tentando o próximo...")
+        task.wait(CONFIG.HOP_DELAY)
+    end
+end
+
+local scanning = false
+
+local function scanCurrentServerForHop()
+    scanning = true
+    setStatus("Aguardando o servidor carregar...")
+    task.wait(CONFIG.SETTLE_DELAY)
+
+    local ok, err = pcall(function()
+        local eggs = scanEggs(true)
+        render(eggs)
+
+        markVisited(game.JobId)
+        state.scanned = state.scanned + 1
+
+        local top = eggs[1]
+        local record = {
+            jobId = game.JobId,
+            placeId = game.PlaceId,
+            found = #eggs,
+        }
+        if top then
+            record.name = top.name
+            record.weight = top.weight
+            record.value = top.value
+            record.rarity = top.rarity
+            record.metric = top.metric
+
+            local bestMetric = state.best and state.best.metric or -1
+            if top.metric > bestMetric then
+                state.best = {
+                    name = top.name, weight = top.weight, value = top.value,
+                    rarity = top.rarity, metric = top.metric,
+                    jobId = game.JobId, placeId = game.PlaceId,
+                }
+                updateBest()
+            end
+        end
+
+        state.history[#state.history + 1] = record
+        printRecord("SERVER", record)
+        saveState()
+        updateMultiBtn()
+        setStatus(string.format("Servidor %d/%d escaneado: %d itens.", state.scanned, CONFIG.MAX_SERVERS, #eggs))
+    end)
+    scanning = false
+
+    if not ok then
+        warn("[RADAR] erro no scan: " .. tostring(err))
+        setStatus("Erro no scan: " .. tostring(err))
+    end
+
+    if alive and state.active then hopNext() end
+end
+
+local function startMulti()
+    if not httpRequest then
+        setStatus("Seu executor não tem request/http_request.")
+        return
+    end
+    if scanning then return end
+    state = newState()
+    state.active = true
+    state.rankBy = CONFIG.RANK_BY
+    markVisited(game.JobId)
+    saveState()
+    updateMultiBtn()
+    updateBest()
+    task.spawn(scanCurrentServerForHop)
+end
+
+local function stopMulti()
+    state.active = false
+    saveState()
+    updateMultiBtn()
+    setStatus("Scan parado pelo usuário.")
+end
+
+----------------------------------------------------------------------
+-- EVENTOS
+----------------------------------------------------------------------
+local function runSingleScan()
+    if scanning or state.active then return end
+    scanning = true
+    setStatus("Varrendo o servidor atual...")
+    task.spawn(function()
+        local ok, err = pcall(function()
+            local eggs = scanEggs(false)
+            render(eggs)
+            setStatus(#eggs == 0 and "Servidor limpo. Tente atualizar."
+                or string.format("%d itens encontrados.", #eggs))
+        end)
+        scanning = false
+        if not ok then setStatus("Erro: " .. tostring(err)) end
+    end)
+end
+
+RefreshBtn.MouseButton1Click:Connect(runSingleScan)
+
+MultiBtn.MouseButton1Click:Connect(function()
+    if state.active then stopMulti() else startMulti() end
+end)
+
+BestGoBtn.MouseButton1Click:Connect(function()
+    local b = state.best
+    if not b then setStatus("Nenhum registro para visitar.") return end
+    if b.jobId == game.JobId then setStatus("Você já está nesse servidor.") return end
+    state.active = false
+    saveState()
+    ensureQueueOnTeleport()
+    local ok, err = pcall(function()
+        TeleportService:TeleportToPlaceInstance(b.placeId or game.PlaceId, b.jobId, LocalPlayer, nil, state)
+    end)
+    setStatus(ok and "Teleportando para o melhor servidor..." or ("Falha: " .. tostring(err)))
+end)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    state.active = false
+    saveState()
+    env.TenshiRadarCleanup()
+end)
+
+----------------------------------------------------------------------
+-- INICIO
+----------------------------------------------------------------------
+updateBest()
+updateMultiBtn()
+
+if resuming then
+    setStatus("Retomando scan multi-server...")
+    task.spawn(scanCurrentServerForHop)
+else
+    runSingleScan()
+end
